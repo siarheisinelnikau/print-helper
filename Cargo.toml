@@ -1,0 +1,28 @@
+[package]
+name = "print-helper"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Prepare clear, economical print layouts"
+repository = "https://github.com/siarheisinelnikau/print-helper"
+rust-version = "1.92"
+
+[dependencies]
+anyhow = "1"
+eframe = { version = "0.33.3", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+flate2 = "1"
+
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "tiff", "webp"] }
+
+rfd = "0.15.4"
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+ureq = "3.5"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Data_Pdf", "Storage_Streams", "Foundation", "Win32_System_WinRT", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Controls_Dialogs", "Win32_System_Threading", "Win32_System_Memory", "Win32_Storage_Xps"] }
+
+[profile.release]
+strip = "debuginfo"
