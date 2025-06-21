@@ -85,10 +85,19 @@ impl NewFile {
     }
     pub fn publish(&mut self, target: &Path) -> Result<()> {
         self.file.sync_all()?;
-        // Windows rename is atomic within the same volume and fails if target exists.
-        // Unlike hard links, this works in restricted environments and on FAT/exFAT.
+        // Explicitly omit REPLACE_EXISTING. std::fs::rename replaces existing files.
         #[cfg(windows)]
-        std::fs::rename(&self.path, target).context("Cannot save output. Choose a new filename in a writable folder; existing files are never overwritten")?;
+        {
+            use std::os::windows::ffi::OsStrExt;
+            use windows::{
+                Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW},
+                core::PCWSTR,
+            };
+            let from: Vec<u16> = self.path.as_os_str().encode_wide().chain(Some(0)).collect();
+            let to: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+            unsafe { MoveFileExW(PCWSTR(from.as_ptr()), PCWSTR(to.as_ptr()), MOVEFILE_WRITE_THROUGH) }
+                .context("Cannot save output. Choose a new filename in a writable folder; existing files are never overwritten")?;
+        }
         #[cfg(not(windows))]
         std::fs::hard_link(&self.path, target)
             .context("Cannot save output without overwriting an existing file")?;
