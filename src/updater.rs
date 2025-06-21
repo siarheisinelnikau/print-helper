@@ -202,14 +202,19 @@ pub fn finish_install(target: &Path, pid: u32, digest: &str) -> Result<()> {
             Foundation::{CloseHandle, WAIT_OBJECT_0},
             System::Threading::*,
         };
-        let process = OpenProcess(PROCESS_SYNCHRONIZE, false, pid)
-            .context("Cannot wait for the previous process")?;
-        let wait = WaitForSingleObject(process, 60_000);
-        CloseHandle(process)?;
-        ensure!(
-            wait == WAIT_OBJECT_0,
-            "Previous process has not exited; installation was not changed"
-        );
+        match OpenProcess(PROCESS_SYNCHRONIZE, false, pid) {
+            Ok(process) => {
+                let wait = WaitForSingleObject(process, 60_000);
+                CloseHandle(process)?;
+                ensure!(
+                    wait == WAIT_OBJECT_0,
+                    "Previous process has not exited; installation was not changed"
+                );
+            }
+            // The original process may exit before the helper finishes initializing.
+            Err(e) if e.code() == windows::core::HRESULT::from_win32(87) => {}
+            Err(e) => return Err(e).context("Cannot wait for the previous process"),
+        }
     }
     #[cfg(not(windows))]
     {
