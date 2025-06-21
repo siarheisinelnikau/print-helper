@@ -218,7 +218,7 @@ pub fn finish_install(target: &Path, pid: u32, digest: &str) -> Result<()> {
     }
     #[allow(unreachable_code)]
     {
-        let backup = target.with_extension("exe.previous");
+        let backup = target.with_extension(format!("exe.previous-{pid}"));
         ensure!(
             !backup.exists(),
             "A previous executable backup already exists; move it aside before updating"
