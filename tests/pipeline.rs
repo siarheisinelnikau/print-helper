@@ -171,7 +171,10 @@ fn saved_transforms_round_trip_and_changed_sources_are_rejected() {
     let f = Fixture::new();
     let path = f.image("input.png", [10, 20, 30]);
     let mut catalog = Catalog::new();
-    let mut p = project(document::import(&[path.clone()], &mut catalog).unwrap(), 2);
+    let mut p = project(
+        document::import(std::slice::from_ref(&path), &mut catalog).unwrap(),
+        2,
+    );
     p.pages[0].crop = [0.1, 0.2, 0.05, 0.1];
     p.pages[0].quarter_turns = 3;
     let copy: Project = serde_json::from_slice(&serde_json::to_vec(&p).unwrap()).unwrap();
@@ -189,7 +192,10 @@ fn cancellation_and_existing_targets_preserve_files() {
     let path = f.image("original.png", [10, 20, 30]);
     let before = std::fs::read(&path).unwrap();
     let mut catalog = Catalog::new();
-    let p = project(document::import(&[path.clone()], &mut catalog).unwrap(), 1);
+    let p = project(
+        document::import(std::slice::from_ref(&path), &mut catalog).unwrap(),
+        1,
+    );
     let cancelled = f.0.join("cancelled.pdf");
     assert!(output::export(&p, &catalog, &cancelled, &AtomicBool::new(true), |_, _| {}).is_err());
     assert!(!cancelled.exists());
@@ -237,7 +243,7 @@ fn native_pdf_import_and_export_round_trip() {
         std::fs::write(&input, data.into_inner()).unwrap();
         let before = std::fs::read(&input).unwrap();
         let mut catalog = Catalog::new();
-        let mut pages = document::import(&[input.clone()], &mut catalog).unwrap();
+        let mut pages = document::import(std::slice::from_ref(&input), &mut catalog).unwrap();
         assert_eq!(pages.len(), 2);
         assert!((pages[0].width_pt - 300.0).abs() < 0.01);
         assert!((pages[1].height_pt - 300.0).abs() < 0.01);
