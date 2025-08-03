@@ -31,6 +31,7 @@ pub enum Task {
     Settings(settings::Settings),
     CheckUpdate,
     Download(updater::Update),
+    Install(PathBuf, String),
 }
 pub enum Outcome {
     Imported(Vec<(Page, RgbImage)>),
@@ -45,6 +46,7 @@ pub enum Outcome {
     Cancelled,
     Checked(Option<updater::Update>),
     Downloaded(PathBuf, String),
+    Restart,
 }
 pub enum Event {
     Progress(String, f32),
@@ -292,6 +294,10 @@ fn run(
             Ok(Outcome::Message("Settings saved".into()))
         }
         Task::CheckUpdate => Ok(Outcome::Checked(updater::check()?)),
+        Task::Install(path, digest) => {
+            updater::launch_install(&path, &digest)?;
+            Ok(Outcome::Restart)
+        }
         Task::Download(update) => {
             let path = updater::download(&update, cancel, |i, n| {
                 progress("Downloading verified update".into(), i as f32 / n as f32)

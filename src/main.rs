@@ -46,16 +46,16 @@ fn main() -> eframe::Result {
         None
     };
     // A helper can still be exiting when the new app starts. Cleanup is optional and narrow.
-    if args.get(1).is_some_and(|s| s == "--updated") {
-        if let (Some(staged), Ok(current)) = (args.get(2), std::env::current_exe()) {
-            let staged = PathBuf::from(staged);
-            if staged.parent() == current.parent()
-                && staged
-                    .file_name()
-                    .is_some_and(|s| s.to_string_lossy().starts_with(".printhelper-update-"))
-            {
-                let _ = std::fs::remove_file(staged);
-            }
+    if args.get(1).is_some_and(|s| s == "--updated")
+        && let (Some(staged), Ok(current)) = (args.get(2), std::env::current_exe())
+    {
+        let staged = PathBuf::from(staged);
+        if staged.parent() == current.parent()
+            && staged
+                .file_name()
+                .is_some_and(|s| s.to_string_lossy().starts_with(".printhelper-update-"))
+        {
+            let _ = std::fs::remove_file(staged);
         }
     }
     let options = eframe::NativeOptions {
@@ -103,6 +103,7 @@ struct App {
     update_status: String,
     startup_check: bool,
     staged_update: Option<(PathBuf, String)>,
+    installing: bool,
     discard: Option<Discard>,
 }
 
@@ -150,6 +151,7 @@ impl App {
             update_status: "No check completed".into(),
             startup_check,
             staged_update: None,
+            installing: false,
             discard: None,
         }
     }
@@ -296,7 +298,9 @@ impl App {
                                 "Download verified. Save your layout, then install and restart."
                                     .into();
                         }
+                        Ok(Outcome::Restart) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
                         Err(e) => {
+                            self.installing = false;
                             self.update_status = e.clone();
                             if !self.startup_check {
                                 self.error = Some(e);
@@ -311,6 +315,7 @@ impl App {
     }
     fn toolbar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+            if self.installing { ui.disable(); }
             ui.horizontal(|ui| {
                 ui.label(RichText::new("PrintHelper").size(24.0).strong().color(Color32::from_rgb(20, 84, 101)));
                 ui.separator();
@@ -327,12 +332,10 @@ impl App {
                     if ui.button("Export PDF…").clicked() { self.error = None; self.worker.submit(Task::Export(self.project.clone())); }
                     if ui.button("Print…").on_hover_text("Opens the Windows print dialog. Match paper and orientation in printer Properties").clicked() { self.worker.submit(Task::Print(self.project.clone())); }
                 });
-                if ui.add_enabled(!self.undo.is_empty() && !self.worker.busy, egui::Button::new("Undo")).clicked() {
-                    if let Some(old) = self.undo.pop() { self.redo.push(std::mem::replace(&mut self.project, old)); self.touch(); }
-                }
-                if ui.add_enabled(!self.redo.is_empty() && !self.worker.busy, egui::Button::new("Redo")).clicked() {
-                    if let Some(next) = self.redo.pop() { self.undo.push(std::mem::replace(&mut self.project, next)); self.touch(); }
-                }
+                if ui.add_enabled(!self.undo.is_empty() && !self.worker.busy, egui::Button::new("Undo")).clicked()
+                    && let Some(old) = self.undo.pop() { self.redo.push(std::mem::replace(&mut self.project, old)); self.touch(); }
+                if ui.add_enabled(!self.redo.is_empty() && !self.worker.busy, egui::Button::new("Redo")).clicked()
+                    && let Some(next) = self.redo.pop() { self.undo.push(std::mem::replace(&mut self.project, next)); self.touch(); }
                 if self.dirty { ui.label("Unsaved layout"); }
                 if let Some(update) = &self.update { ui.colored_label(Color32::from_rgb(20, 100, 90), format!("Update {} available — Settings", update.version)); }
             });
@@ -342,6 +345,9 @@ impl App {
         egui::SidePanel::left("pages")
             .exact_width(195.0)
             .show(ctx, |ui| {
+                if self.installing {
+                    ui.disable();
+                }
                 ui.heading(format!("Pages · {}", self.project.pages.len()));
                 ui.horizontal(|ui| {
                     let ready = !self.worker.busy && !self.project.pages.is_empty();
@@ -430,6 +436,7 @@ impl App {
     }
     fn layout_panel(&mut self, ctx: &egui::Context) {
         egui::SidePanel::right("layout").exact_width(255.0).show(ctx, |ui| {
+            if self.installing { ui.disable(); }
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("Sheet layout");
                 ui.add_enabled_ui(!self.worker.busy, |ui| {
@@ -541,13 +548,10 @@ impl App {
                     ui.small("Save your layout first. Installation closes and restarts PrintHelper. Settings and source documents are preserved.");
                     if self.staged_update.is_none() && ui.add_enabled(!self.network.busy && !self.worker.busy && !self.dirty, egui::Button::new("Download and install")).clicked() { self.network.submit(Task::Download(update.clone())); }
                 }
-                if let Some((path, digest)) = &self.staged_update {
-                    if ui.add_enabled(!self.dirty && !self.worker.busy, egui::Button::new("Install and restart")).clicked() {
-                        match updater::launch_install(path, digest) {
-                            Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-                            Err(e) => self.error = Some(format!("Cannot install update: {e:#}")),
-                        }
-                    }
+                if let Some((path, digest)) = &self.staged_update
+                    && ui.add_enabled(!self.dirty && !self.worker.busy && !self.network.busy, egui::Button::new("Install and restart")).clicked() {
+                    self.installing = self.network.submit(Task::Install(path.clone(), digest.clone()));
+                    self.update_status = "Verifying and preparing restart…".into();
                 }
                 if self.network.busy && ui.button("Cancel download").clicked() { self.network.cancel.store(true, Ordering::Relaxed); }
                 ui.separator();
