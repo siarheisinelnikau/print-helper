@@ -4,6 +4,10 @@ Date: 2026-10-31. Scope: code-only development on Windows x64 with rustc 1.96.1 
 
 ## Automated checks
 
+Final result: formatting passed, Clippy passed with warnings denied for application code, and all 10 integration tests passed. The same checks passed again with static MSVC runtime linking enabled. The release/package script completed successfully. Read-only PE inspection confirmed x64, Windows GUI subsystem and only Windows system DLL imports, without VCRUNTIME/MSVCP. The packaged dependency notices match the committed notice document.
+
+Artifact: `dist/PrintHelper-v0.1.0.exe`, 9,137,664 bytes. SHA-256: `e183365051b82371a4e66c78280424168ec243423224057356488dadfca5c400`. The EXE was inspected without execution.
+
 - `cargo fmt --all -- --check`: formatting.
 - `cargo clippy --offline --all-targets -- -D warnings`: all application/library/test targets.
 - `cargo test --offline --locked`: ten synthetic integration tests, including the built-in Windows PDF renderer.
