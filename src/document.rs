@@ -142,35 +142,26 @@ pub fn render(page: &Page, catalog: &Catalog, target: (u32, u32), gray: bool) ->
         .get(&page.path)
         .context("Source document is not loaded")?;
     verify_page(page, source)?;
-    let (tw, th) = if page.quarter_turns % 2 == 1 {
-        (target.1, target.0)
-    } else {
-        target
-    };
-    let w = (tw as f64 / (1.0 - page.crop[0] - page.crop[2]))
-        .ceil()
-        .max(1.0) as u32;
-    let h = (th as f64 / (1.0 - page.crop[1] - page.crop[3]))
-        .ceil()
-        .max(1.0) as u32;
     ensure!(
-        w as u64 * h as u64 <= MAX_PIXELS,
-        "Page render exceeds 32 megapixels; reduce DPI or crop"
+        target.0 > 0 && target.1 > 0 && target.0 as u64 * target.1 as u64 <= MAX_PIXELS,
+        "Page output must contain 1–32 million pixels"
     );
-    let img = match &source.data {
-        SourceData::Image(img) => {
-            image::imageops::resize(img, w, h, image::imageops::FilterType::Triangle)
-        }
+    let cropped = match &source.data {
+        // Crop original pixels before any filtering. Resizing the whole source first
+        // blended discarded margins into the preview and produced DPI-dependent crops.
+        SourceData::Image(img) => crop_pixels(img, page.crop)?,
         #[cfg(windows)]
-        SourceData::Pdf(doc) => pdf::render(doc, page.source_page, w, h)?,
+        SourceData::Pdf(doc) => {
+            let (tw, th) = if page.quarter_turns % 2 == 1 {
+                (target.1, target.0)
+            } else {
+                target
+            };
+            let w = (tw as f64 / (1.0 - page.crop[0] - page.crop[2])).ceil() as u32;
+            let h = (th as f64 / (1.0 - page.crop[1] - page.crop[3])).ceil() as u32;
+            crop_pixels(&pdf::render(doc, page.source_page, w, h)?, page.crop)?
+        }
     };
-    let (iw, ih) = img.dimensions();
-    let x = (page.crop[0] * iw as f64).round() as u32;
-    let y = (page.crop[1] * ih as f64).round() as u32;
-    let cw = ((1.0 - page.crop[2]) * iw as f64).round() as u32 - x;
-    let ch = ((1.0 - page.crop[3]) * ih as f64).round() as u32 - y;
-    ensure!(cw > 0 && ch > 0, "Crop leaves no pixels");
-    let cropped = image::imageops::crop_imm(&img, x, y, cw, ch).to_image();
     let mut img = match page.quarter_turns {
         1 => image::imageops::rotate90(&cropped),
         2 => image::imageops::rotate180(&cropped),
@@ -186,10 +177,20 @@ pub fn render(page: &Page, catalog: &Catalog, target: (u32, u32), gray: bool) ->
     }
     Ok(image::imageops::resize(
         &img,
-        target.0.max(1),
-        target.1.max(1),
+        target.0,
+        target.1,
         image::imageops::FilterType::Triangle,
     ))
+}
+
+fn crop_pixels(image: &RgbImage, crop: [f64; 4]) -> Result<RgbImage> {
+    let (w, h) = image.dimensions();
+    let x = (crop[0] * w as f64).floor() as u32;
+    let y = (crop[1] * h as f64).floor() as u32;
+    let right = ((1.0 - crop[2]) * w as f64).ceil().min(w as f64) as u32;
+    let bottom = ((1.0 - crop[3]) * h as f64).ceil().min(h as f64) as u32;
+    ensure!(right > x && bottom > y, "Crop leaves no pixels");
+    Ok(image::imageops::crop_imm(image, x, y, right - x, bottom - y).to_image())
 }
 
 #[cfg(windows)]
@@ -211,6 +212,10 @@ pub mod pdf {
     }
 
     pub fn render(doc: &PdfDocument, index: u32, w: u32, h: u32) -> Result<RgbImage> {
+        ensure!(
+            w > 0 && h > 0 && w as u64 * h as u64 <= MAX_PIXELS,
+            "Page render exceeds 32 megapixels; reduce DPI or crop"
+        );
         let page = doc.GetPage(index)?;
         let result = (|| {
             let stream = InMemoryRandomAccessStream::new()?;

@@ -149,6 +149,28 @@ fn asymmetric_crop_then_clockwise_rotation_and_grayscale() {
 }
 
 #[test]
+fn cropped_image_edges_do_not_bleed_into_low_resolution_output() {
+    let f = Fixture::new();
+    let path = f.0.join("crop-border.png");
+    RgbImage::from_fn(100, 100, |x, _| Rgb(if x < 40 { [0; 3] } else { [255; 3] }))
+        .save(&path)
+        .unwrap();
+    let mut catalog = Catalog::new();
+    let mut page = document::import(&[path], &mut catalog).unwrap().remove(0);
+    page.crop[0] = 0.4;
+    for turns in 0..4 {
+        page.quarter_turns = turns;
+        for size in [(1, 1), (7, 9), (120, 150)] {
+            let image = document::render(&page, &catalog, size, false).unwrap();
+            assert!(
+                image.pixels().all(|p| p.0 == [255; 3]),
+                "cropped black border leaked into {size:?} at rotation {turns}"
+            );
+        }
+    }
+}
+
+#[test]
 fn transparent_pixels_become_white_paper() {
     let f = Fixture::new();
     let path = f.0.join("alpha.png");
@@ -203,6 +225,57 @@ fn cancellation_and_existing_targets_preserve_files() {
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert!(output::save_new(&path, b"replace").is_err());
     assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn export_cancellation_after_render_and_destination_races_do_not_publish_or_replace() {
+    let f = Fixture::new();
+    let source = f.image("source.png", [80, 90, 100]);
+    let mut catalog = Catalog::new();
+    let p = project(document::import(&[source], &mut catalog).unwrap(), 1);
+    let target = f.0.join("output.pdf");
+    let cancel = AtomicBool::new(false);
+    assert!(
+        output::export(&p, &catalog, &target, &cancel, |_, _| {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        })
+        .is_err()
+    );
+    assert!(!target.exists());
+    assert!(
+        output::export(&p, &catalog, &target, &AtomicBool::new(false), |_, _| {
+            std::fs::write(&target, b"created while rendering").unwrap();
+        })
+        .is_err()
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"created while rendering");
+    assert!(
+        !std::fs::read_dir(&f.0).unwrap().any(|e| e
+            .unwrap()
+            .path()
+            .extension()
+            .is_some_and(|e| e == "tmp"))
+    );
+}
+
+#[test]
+fn pdf_writer_rejects_invalid_inputs_before_writing_a_page() {
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    let mut pdf = PdfWriter::new(&mut bytes).unwrap();
+    let image = RgbImage::from_pixel(10, 10, Rgb([255; 3]));
+    for size in [
+        (f64::NAN, 10.0),
+        (10.0, f64::INFINITY),
+        (0.0, 10.0),
+        (-1.0, 10.0),
+        (14401.0, 10.0),
+    ] {
+        assert!(pdf.page(&image, size).is_err());
+    }
+    assert!(pdf.page(&RgbImage::new(0, 1), (10.0, 10.0)).is_err());
+    pdf.page(&image, (10.0, 10.0)).unwrap();
+    pdf.finish().unwrap();
+    assert!(!String::from_utf8_lossy(bytes.get_ref()).contains("NaN"));
 }
 
 #[cfg(windows)]
@@ -266,5 +339,60 @@ fn native_pdf_import_and_export_round_trip() {
         );
         assert!(bottom[0] > 240 && bottom[2] < 15, "bottom must contain red");
         assert_eq!(std::fs::read(input).unwrap(), before);
+    });
+}
+
+#[test]
+#[cfg(windows)]
+fn native_export_multiple_sheets_preserves_landscape_crops_and_grayscale() {
+    native(|| {
+        let f = Fixture::new();
+        let pattern = RgbImage::from_fn(100, 100, |x, _| {
+            Rgb(if x < 40 { [0; 3] } else { [0, 255, 0] })
+        });
+        let input = f.0.join("pattern.pdf");
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        let mut pdf = PdfWriter::new(&mut bytes).unwrap();
+        pdf.page(&pattern, (100.0, 100.0)).unwrap();
+        pdf.finish().unwrap();
+        std::fs::write(&input, bytes.into_inner()).unwrap();
+        let mut catalog = Catalog::new();
+        let page = document::import(&[input], &mut catalog).unwrap().remove(0);
+        let mut pages = vec![page; 5];
+        for (i, page) in pages.iter_mut().enumerate() {
+            page.crop[0] = 0.4;
+            page.quarter_turns = (i % 4) as u8;
+        }
+        let mut p = project(pages, 2);
+        p.layout.landscape = true;
+        p.layout.grayscale = true;
+        let target = f.0.join("landscape.pdf");
+        output::export(&p, &catalog, &target, &AtomicBool::new(false), |_, _| {}).unwrap();
+        let doc = document::pdf::load(&std::fs::read(target).unwrap()).unwrap();
+        assert_eq!(doc.PageCount().unwrap(), 3);
+        for i in 0..3 {
+            let page = doc.GetPage(i).unwrap();
+            let size = page.Size().unwrap();
+            assert!(size.Width > size.Height);
+            assert!((size.Width as f64 * 0.75 - p.layout.paper_pt().0).abs() < 0.01);
+            page.Close().unwrap();
+            let image = document::pdf::render(&doc, i, 842, 595).unwrap();
+            for (cell_index, cell) in p.layout.cells().iter().enumerate() {
+                let pixel = image
+                    .get_pixel(
+                        (cell.x + cell.w / 2.0) as u32,
+                        (cell.y + cell.h / 2.0) as u32,
+                    )
+                    .0;
+                if i == 2 && cell_index == 1 {
+                    assert_eq!(pixel, [255; 3]);
+                } else {
+                    assert!(
+                        pixel.iter().all(|c| (180..=185).contains(c)),
+                        "unexpected grayscale pixel {pixel:?}"
+                    );
+                }
+            }
+        }
     });
 }
