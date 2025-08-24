@@ -175,6 +175,21 @@ impl<W: Write + Seek> PdfWriter<W> {
         Ok(())
     }
     pub fn page(&mut self, image: &RgbImage, size: (f64, f64)) -> Result<()> {
+        ensure!(
+            image.width() > 0
+                && image.height() > 0
+                && image.width() as u64 * image.height() as u64 <= document::MAX_PIXELS,
+            "Invalid PDF image dimensions"
+        );
+        ensure!(
+            size.0.is_finite()
+                && size.1.is_finite()
+                && size.0 > 0.0
+                && size.1 > 0.0
+                && size.0 <= 14400.0
+                && size.1 <= 14400.0,
+            "PDF 1.4 page dimensions must be finite and within 200 inches"
+        );
         let page = self.offsets.len();
         let content = page + 1;
         let bitmap = page + 2;
