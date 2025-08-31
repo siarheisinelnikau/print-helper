@@ -61,7 +61,7 @@ pub fn render_sheet(
 /// A new sibling temporary file; never truncates a source or an existing output.
 pub struct NewFile {
     pub path: PathBuf,
-    pub file: std::fs::File,
+    file: Option<std::fs::File>,
 }
 impl NewFile {
     pub fn beside(target: &Path) -> Result<Self> {
@@ -70,21 +70,50 @@ impl NewFile {
             .context("Destination has no parent directory")?;
         for n in 0..1000 {
             let path = parent.join(format!(".printhelper-{}-{n}.tmp", std::process::id()));
+            if path
+                .file_name()
+                .zip(target.file_name())
+                .is_some_and(|(temporary, destination)| {
+                    if cfg!(windows) {
+                        temporary.eq_ignore_ascii_case(destination)
+                    } else {
+                        temporary == destination
+                    }
+                })
+            {
+                continue;
+            }
             match OpenOptions::new()
                 .write(true)
                 .read(true)
                 .create_new(true)
                 .open(&path)
             {
-                Ok(file) => return Ok(Self { path, file }),
+                Ok(file) => {
+                    return Ok(Self {
+                        path,
+                        file: Some(file),
+                    });
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(e.into()),
             }
         }
         anyhow::bail!("Cannot allocate a temporary output")
     }
+    pub fn file(&mut self) -> Result<&mut std::fs::File> {
+        self.file
+            .as_mut()
+            .context("Temporary file is already closed")
+    }
+    pub fn seal(&mut self) -> Result<()> {
+        if let Some(file) = self.file.take() {
+            file.sync_all()?;
+        }
+        Ok(())
+    }
     pub fn publish(&mut self, target: &Path) -> Result<()> {
-        self.file.sync_all()?;
+        self.seal()?;
         // Explicitly omit REPLACE_EXISTING. std::fs::rename replaces existing files.
         #[cfg(windows)]
         {
@@ -106,13 +135,14 @@ impl NewFile {
 }
 impl Drop for NewFile {
     fn drop(&mut self) {
+        self.file.take();
         let _ = std::fs::remove_file(&self.path);
     }
 }
 
 pub fn save_new(target: &Path, bytes: &[u8]) -> Result<()> {
     let mut temp = NewFile::beside(target)?;
-    temp.file.write_all(bytes)?;
+    temp.file()?.write_all(bytes)?;
     temp.publish(target)
 }
 
@@ -131,7 +161,7 @@ pub fn export(
     );
     let mut temp = NewFile::beside(target)?;
     {
-        let mut pdf = PdfWriter::new(BufWriter::new(&mut temp.file))?;
+        let mut pdf = PdfWriter::new(BufWriter::new(temp.file()?))?;
         let count = project.layout.sheet_count(project.pages.len());
         for sheet in 0..count {
             ensure!(

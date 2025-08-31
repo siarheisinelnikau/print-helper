@@ -34,8 +34,9 @@ pub fn save(settings: &Settings) -> Result<()> {
     std::fs::create_dir_all(path.parent().context("Missing settings directory")?)?;
     let mut temp = crate::output::NewFile::beside(&path)?;
     use std::io::Write;
-    temp.file.write_all(&serde_json::to_vec_pretty(settings)?)?;
-    temp.file.sync_all()?;
+    temp.file()?
+        .write_all(&serde_json::to_vec_pretty(settings)?)?;
+    temp.seal()?;
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;

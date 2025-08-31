@@ -4,7 +4,7 @@ use image::{DynamicImage, ImageDecoder, ImageReader, RgbImage};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
-    io::Cursor,
+    io::{Cursor, Read},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -29,11 +29,15 @@ enum SourceData {
 pub type Catalog = HashMap<PathBuf, Arc<Source>>;
 
 pub fn load(path: &Path) -> Result<Source> {
+    let file = std::fs::File::open(path).with_context(|| format!("Read {}", path.display()))?;
+    let metadata = file.metadata()?;
     ensure!(
-        std::fs::metadata(path)?.len() <= MAX_FILE,
-        "Input exceeds 64 MiB"
+        metadata.is_file() && metadata.len() <= MAX_FILE,
+        "Input must be a regular file up to 64 MiB"
     );
-    let bytes = std::fs::read(path).with_context(|| format!("Read {}", path.display()))?;
+    // Bound the read itself: a document may grow after its metadata was checked.
+    let mut bytes = Vec::new();
+    file.take(MAX_FILE + 1).read_to_end(&mut bytes)?;
     ensure!(bytes.len() as u64 <= MAX_FILE, "Input exceeds 64 MiB");
     let digest = format!("{:x}", Sha256::digest(&bytes));
     if bytes.starts_with(b"%PDF-") {
