@@ -278,6 +278,16 @@ fn pdf_writer_rejects_invalid_inputs_before_writing_a_page() {
     assert!(!String::from_utf8_lossy(bytes.get_ref()).contains("NaN"));
 }
 
+#[test]
+fn a_destination_named_like_a_temporary_file_is_preserved() {
+    for prefix in [".printhelper", ".PRINTHELPER"] {
+        let f = Fixture::new();
+        let target = f.0.join(format!("{prefix}-{}-0.tmp", std::process::id()));
+        output::save_new(&target, b"saved document").unwrap();
+        assert_eq!(std::fs::read(target).unwrap(), b"saved document");
+    }
+}
+
 #[cfg(windows)]
 fn native(test: impl FnOnce()) {
     unsafe {
