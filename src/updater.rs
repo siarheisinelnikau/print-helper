@@ -9,6 +9,9 @@ use std::{
     time::Duration,
 };
 
+mod install;
+const MAX_ASSET_SIZE: u64 = 200_000_000;
+
 pub const REPOSITORY: &str = "https://github.com/siarheisinelnikau/print-helper";
 const API: &str = "https://api.github.com/repos/siarheisinelnikau/print-helper/releases/latest";
 
@@ -33,8 +36,17 @@ pub struct Update {
 }
 
 pub fn select(release: Release, installed: &Version) -> Result<Option<Update>> {
-    let version = Version::parse(release.tag_name.trim_start_matches('v'))?;
-    if release.draft || release.prerelease || !version.pre.is_empty() || version <= *installed {
+    let version = Version::parse(
+        release
+            .tag_name
+            .strip_prefix('v')
+            .unwrap_or(&release.tag_name),
+    )?;
+    if release.draft
+        || release.prerelease
+        || !version.pre.is_empty()
+        || !version.cmp_precedence(installed).is_gt()
+    {
         return Ok(None);
     }
     ensure!(
@@ -56,7 +68,7 @@ pub fn select(release: Release, installed: &Version) -> Result<Option<Update>> {
         "Unexpected update asset URL"
     );
     ensure!(
-        (1024..=200_000_000).contains(&asset.size),
+        (1024..=MAX_ASSET_SIZE).contains(&asset.size),
         "Invalid update asset size"
     );
     let digest = asset
@@ -73,6 +85,7 @@ fn valid_digest(digest: &str) -> bool {
 }
 fn agent(seconds: u64) -> ureq::Agent {
     ureq::Agent::config_builder()
+        .https_only(true)
         .timeout_global(Some(Duration::from_secs(seconds)))
         .build()
         .into()
@@ -93,21 +106,100 @@ pub fn check() -> Result<Option<Update>> {
 
 pub fn validate_executable(path: &Path, expected: &str) -> Result<()> {
     ensure!(valid_digest(expected), "Invalid expected digest");
-    let bytes = std::fs::read(path)?;
-    ensure!(
-        bytes.len() >= 1024 && bytes.len() <= 200_000_000 && &bytes[..2] == b"MZ",
-        "Update is not a Windows executable"
-    );
-    let pe = u32::from_le_bytes(bytes[60..64].try_into()?) as usize;
-    ensure!(
-        pe <= bytes.len() - 6
-            && &bytes[pe..pe + 4] == b"PE\0\0"
-            && bytes[pe + 4..pe + 6] == [0x64, 0x86],
-        "Update is not an x64 PE executable"
-    );
+    let bytes = read_bounded(path)?;
+    validate_pe(&bytes)?;
     ensure!(
         format!("sha256:{:x}", Sha256::digest(&bytes)).eq_ignore_ascii_case(expected),
         "Update checksum does not match; installation stopped"
+    );
+    Ok(())
+}
+
+fn read_bounded(path: &Path) -> Result<Vec<u8>> {
+    let file = std::fs::File::open(path)?;
+    ensure!(
+        file.metadata()?.is_file() && file.metadata()?.len() <= MAX_ASSET_SIZE,
+        "Executable exceeds the update size limit"
+    );
+    let mut bytes = Vec::new();
+    file.take(MAX_ASSET_SIZE + 1).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 <= MAX_ASSET_SIZE,
+        "Executable exceeds the update size limit"
+    );
+    Ok(bytes)
+}
+
+fn validate_pe(bytes: &[u8]) -> Result<()> {
+    ensure!(
+        bytes.len() >= 1024 && &bytes[..2] == b"MZ",
+        "Update is not a Windows executable"
+    );
+    let u16_at =
+        |i: usize| u16::from_le_bytes(bytes[i..i + 2].try_into().expect("checked PE range"));
+    let u32_at = |i: usize| {
+        u32::from_le_bytes(bytes[i..i + 4].try_into().expect("checked PE range")) as usize
+    };
+    let pe = u32_at(60);
+    ensure!(
+        pe >= 64
+            && pe <= bytes.len() - 24
+            && &bytes[pe..pe + 4] == b"PE\0\0"
+            && u16_at(pe + 4) == 0x8664,
+        "Update is not an x64 PE executable"
+    );
+    let sections = u16_at(pe + 6) as usize;
+    let flags = u16_at(pe + 22);
+    let optional_len = u16_at(pe + 20) as usize;
+    let optional = pe + 24;
+    ensure!(
+        (1..=96).contains(&sections) && flags & 0x0002 != 0 && flags & 0x2000 == 0,
+        "Update must be an executable image, not a DLL or object file"
+    );
+    let table = optional + optional_len;
+    ensure!(
+        optional_len >= 112 && table <= bytes.len() && sections * 40 <= bytes.len() - table,
+        "Truncated PE optional header or section table"
+    );
+    ensure!(
+        u16_at(optional) == 0x20b && u16_at(optional + 68) == 2,
+        "Update must use the x64 Windows GUI subsystem"
+    );
+    let headers = u32_at(optional + 60);
+    let image_size = u32_at(optional + 56);
+    let entry = u32_at(optional + 16);
+    let directories = u32_at(optional + 108);
+    ensure!(
+        headers >= table + sections * 40
+            && headers <= bytes.len()
+            && image_size >= headers
+            && entry > 0
+            && entry < image_size
+            && directories <= (optional_len - 112) / 8,
+        "Invalid PE image/header bounds"
+    );
+    let mut executable_entry = false;
+    for n in 0..sections {
+        let section = table + n * 40;
+        let virtual_size = u32_at(section + 8);
+        let address = u32_at(section + 12);
+        let raw_size = u32_at(section + 16);
+        let raw = u32_at(section + 20);
+        ensure!(
+            address <= image_size
+                && virtual_size.max(raw_size) <= image_size - address
+                && (raw_size == 0
+                    || (raw >= headers && raw <= bytes.len() && raw_size <= bytes.len() - raw)),
+            "PE section exceeds the downloaded image"
+        );
+        if entry >= address && entry - address < raw_size && u32_at(section + 36) & 0x2000_0000 != 0
+        {
+            executable_entry = true;
+        }
+    }
+    ensure!(
+        executable_entry,
+        "PE entry point is outside executable file data"
     );
     Ok(())
 }
@@ -190,6 +282,12 @@ pub fn finish_install(target: &Path, pid: u32, digest: &str) -> Result<()> {
         "Update target must be a different executable in the same directory"
     );
     ensure!(
+        target
+            .extension()
+            .is_some_and(|s| s.eq_ignore_ascii_case("exe")),
+        "Update target must be an executable"
+    );
+    ensure!(
         current
             .file_name()
             .is_some_and(|n| n.to_string_lossy().starts_with(".printhelper-update-")),
@@ -222,34 +320,16 @@ pub fn finish_install(target: &Path, pid: u32, digest: &str) -> Result<()> {
         anyhow::bail!("Installation requires Windows");
     }
     #[allow(unreachable_code)]
-    {
-        let backup = target.with_extension(format!("exe.previous-{pid}"));
-        ensure!(
-            !backup.exists(),
-            "A previous executable backup already exists; move it aside before updating"
-        );
-        let replacement = target.with_extension("exe.next");
-        let mut output = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&replacement)?;
-        std::io::copy(&mut std::fs::File::open(&current)?, &mut output)?;
-        output.sync_all()?;
-        drop(output);
-        validate_executable(&replacement, digest)?;
-        if let Err(e) = std::fs::rename(&target, &backup) {
-            let _ = std::fs::remove_file(&replacement);
-            return Err(e.into());
-        }
-        if let Err(e) = std::fs::rename(&replacement, &target) {
-            let _ = std::fs::rename(&backup, &target);
-            let _ = std::fs::remove_file(&replacement);
-            return Err(e.into());
-        }
-        std::process::Command::new(&target)
-            .arg("--updated")
-            .arg(&current)
-            .spawn()?;
-        Ok(())
-    }
+    install::finish(&target, &current, pid, digest)
+}
+
+pub fn record_install_error(message: &str) -> Result<()> {
+    let current = std::env::current_exe()?;
+    ensure!(
+        current
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with(".printhelper-update-")),
+        "Not an update helper"
+    );
+    crate::output::save_new(&current.with_extension("error.txt"), message.as_bytes())
 }

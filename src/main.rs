@@ -30,13 +30,8 @@ fn main() -> eframe::Result {
             )
         })();
         if let Err(error) = result {
-            // Relaunch the old binary with a visible explanation if replacement failed.
-            if let Some(target) = args.get(2) {
-                let _ = std::process::Command::new(target)
-                    .arg("--update-error")
-                    .arg(format!("{error:#}"))
-                    .spawn();
-            }
+            // Safe relaunch/rollback belongs to the validated helper, after parent exit.
+            let _ = updater::record_install_error(&format!("{error:#}"));
         }
         return Ok(());
     }
@@ -47,16 +42,21 @@ fn main() -> eframe::Result {
     };
     // A helper can still be exiting when the new app starts. Cleanup is optional and narrow.
     if args.get(1).is_some_and(|s| s == "--updated")
-        && let (Some(staged), Ok(current)) = (args.get(2), std::env::current_exe())
+        && let (Some(staged), Ok(current)) = (
+            args.get(2),
+            std::env::current_exe().and_then(|p| p.canonicalize()),
+        )
+        && let Ok(staged) = PathBuf::from(staged).canonicalize()
+        && staged != current
+        && staged.parent() == current.parent()
+        && staged
+            .extension()
+            .is_some_and(|s| s.eq_ignore_ascii_case("exe"))
+        && staged
+            .file_name()
+            .is_some_and(|s| s.to_string_lossy().starts_with(".printhelper-update-"))
     {
-        let staged = PathBuf::from(staged);
-        if staged.parent() == current.parent()
-            && staged
-                .file_name()
-                .is_some_and(|s| s.to_string_lossy().starts_with(".printhelper-update-"))
-        {
-            let _ = std::fs::remove_file(staged);
-        }
+        let _ = std::fs::remove_file(staged);
     }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
