@@ -150,22 +150,26 @@ fn asymmetric_crop_then_clockwise_rotation_and_grayscale() {
 
 #[test]
 fn cropped_image_edges_do_not_bleed_into_low_resolution_output() {
-    let f = Fixture::new();
-    let path = f.0.join("crop-border.png");
-    RgbImage::from_fn(100, 100, |x, _| Rgb(if x < 40 { [0; 3] } else { [255; 3] }))
+    for edge in [29, 40, 43] {
+        let f = Fixture::new();
+        let path = f.0.join("crop-border.png");
+        RgbImage::from_fn(100, 100, |x, _| {
+            Rgb(if x < edge { [0; 3] } else { [255; 3] })
+        })
         .save(&path)
         .unwrap();
-    let mut catalog = Catalog::new();
-    let mut page = document::import(&[path], &mut catalog).unwrap().remove(0);
-    page.crop[0] = 0.4;
-    for turns in 0..4 {
-        page.quarter_turns = turns;
-        for size in [(1, 1), (7, 9), (120, 150)] {
-            let image = document::render(&page, &catalog, size, false).unwrap();
-            assert!(
-                image.pixels().all(|p| p.0 == [255; 3]),
-                "cropped black border leaked into {size:?} at rotation {turns}"
-            );
+        let mut catalog = Catalog::new();
+        let mut page = document::import(&[path], &mut catalog).unwrap().remove(0);
+        page.crop[0] = edge as f64 / 100.0;
+        for turns in 0..4 {
+            page.quarter_turns = turns;
+            for size in [(1, 1), (7, 9), (120, 150)] {
+                let image = document::render(&page, &catalog, size, false).unwrap();
+                assert!(
+                    image.pixels().all(|p| p.0 == [255; 3]),
+                    "cropped black border leaked into {size:?} at rotation {turns}"
+                );
+            }
         }
     }
 }
