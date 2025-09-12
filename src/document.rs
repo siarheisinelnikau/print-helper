@@ -189,10 +189,20 @@ pub fn render(page: &Page, catalog: &Catalog, target: (u32, u32), gray: bool) ->
 
 fn crop_pixels(image: &RgbImage, crop: [f64; 4]) -> Result<RgbImage> {
     let (w, h) = image.dimensions();
-    let x = (crop[0] * w as f64).floor() as u32;
-    let y = (crop[1] * h as f64).floor() as u32;
-    let right = ((1.0 - crop[2]) * w as f64).ceil().min(w as f64) as u32;
-    let bottom = ((1.0 - crop[3]) * h as f64).ceil().min(h as f64) as u32;
+    // Percentages such as 29% can multiply back to 28.999999999999996.
+    // Snap only floating-point noise so floor/ceil do not retain an extra border.
+    let snap = |value: f64| {
+        let nearest = value.round();
+        if (value - nearest).abs() <= value.abs().max(1.0) * f64::EPSILON * 8.0 {
+            nearest
+        } else {
+            value
+        }
+    };
+    let x = snap(crop[0] * w as f64).floor() as u32;
+    let y = snap(crop[1] * h as f64).floor() as u32;
+    let right = snap((1.0 - crop[2]) * w as f64).ceil().min(w as f64) as u32;
+    let bottom = snap((1.0 - crop[3]) * h as f64).ceil().min(h as f64) as u32;
     ensure!(right > x && bottom > y, "Crop leaves no pixels");
     Ok(image::imageops::crop_imm(image, x, y, right - x, bottom - y).to_image())
 }
