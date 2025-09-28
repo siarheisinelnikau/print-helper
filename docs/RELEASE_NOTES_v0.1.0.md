@@ -11,6 +11,15 @@ Prepare multi-page print layouts from PDF and image inputs in an independent Win
 - An explicit Windows print action, with paper/orientation and hard-margin checks before spooling.
 - Settings with installed version, optional startup checks, manual update checks and a user-triggered verified download/install/restart path.
 
+## Fixed during local review
+
+- Crop original image pixels before scaling so discarded borders do not contaminate previews or exported pages.
+- Reject invalid PDF page/image dimensions and guard temporary-file destinations, including Windows filename case variants.
+- Preserve a flushed executable backup and restore it when replacement or restart fails; close staging handles before Windows file replacement.
+- Relaunch only a verified original after parent exit, and retain early helper failures in an adjacent error report.
+- Compare SemVer precedence without build metadata, reject malformed executable headers/sections and enforce HTTPS throughout update redirects.
+- Consolidate the toolbar, give PDF export primary emphasis, group crop controls and replace technical paragraphs with contextual help. Settings shows download progress and a download-specific cancel action; failed previews offer retry.
+
 ## Platform and download
 
 Planned asset: `PrintHelper-v0.1.0.exe`, Windows 10/11 x64. Uses the built-in Windows PDF renderer; no PDF companion DLL, printer driver or service. Include `SHA256SUMS.txt` and third-party license notices with the executable.
