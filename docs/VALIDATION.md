@@ -4,13 +4,13 @@ Date: 2026-10-31. Scope: code-only development on Windows x64 with rustc 1.96.1 
 
 ## Automated checks
 
-Final result: formatting passed, Clippy passed with warnings denied for application code, and all 10 integration tests passed. The same checks passed again with static MSVC runtime linking enabled. The release/package script completed successfully. Read-only PE inspection confirmed x64, Windows GUI subsystem and only Windows system DLL imports, without VCRUNTIME/MSVCP. The packaged dependency notices match the committed notice document.
+Current review result: formatting passed, Clippy passed with warnings denied for application code, and all **20 tests** passed (3 file-transaction unit tests, 12 document/export integration tests and 5 update integration tests). Checks used static MSVC runtime linking. The release/package script completed successfully. Read-only PE inspection confirmed x64, Windows GUI subsystem and only Windows system DLL imports, without VCRUNTIME/MSVCP. The initial implementation had 10 tests; the current suite adds the regressions listed below.
 
-Artifact: `dist/PrintHelper-v0.1.0.exe`, 9,137,664 bytes. SHA-256: `e183365051b82371a4e66c78280424168ec243423224057356488dadfca5c400`. The EXE was inspected without execution.
+Artifact: `dist/PrintHelper-v0.1.0.exe`, 9,241,088 bytes. SHA-256: `0ebac3271242564357a23c62887d68bb9ce5e26dcb48c8124cadb52578a8a74c`. The EXE was inspected without execution.
 
 - `cargo fmt --all -- --check`: formatting.
 - `cargo clippy --offline --all-targets -- -D warnings`: all application/library/test targets.
-- `cargo test --offline --locked`: ten synthetic integration tests, including the built-in Windows PDF renderer.
+- `cargo test --offline --locked`: twenty synthetic tests, including the built-in Windows PDF renderer and file transactions with fake restart callbacks.
 - `scripts/package.ps1 -Offline`: optimized Windows x64 GUI executable, versioned name, SHA256SUMS and license notices. Static MSVC runtime is selected in the repository configuration.
 - `python scripts/inspect-pe.py dist/PrintHelper-v0.1.0.exe`: read-only architecture/subsystem/import-table check; the script rejects external VCRUNTIME/MSVCP imports. It never executes the application.
 - `python scripts/generate-notices.py`: collect license/notice texts for the locked Windows dependency graph, including font licenses. Standard license texts supplement crates that do not package their declared license file.
@@ -34,6 +34,26 @@ Dependency network retrieval initially failed with `getaddrinfo() thread failed 
 
 These tests do not establish full PDF fidelity, actual printer output, a working self-update cycle, or the visual quality/responsiveness of the GUI.
 
+## Code-review findings and fixes
+
+| Priority | Finding | Fix and evidence |
+| --- | --- | --- |
+| P1 | A successful EXE replacement followed by process-creation failure left the new installation in place without rollback | A flushed independent backup precedes Windows ReplaceFile; replacement/restart errors restore the original bytes. Tests explicitly verify that the fake restart callback was reached, failed, and left the old contents plus backup intact. No executable is launched by these tests. |
+| P2 | Main's generic helper-error handler launched an unchecked CLI target, including argument/wait failures that could leave the original running | Relaunch is inside the validated helper path, after parent exit and verification of restored original bytes. Earlier failures only record an adjacent helper error report when possible. Process waiting/relaunch still require runtime validation. |
+| P2 | Resampling before cropping blended discarded image borders into lower-resolution preview/export | Crop original pixels before filtering; snap only floating-point noise at integer pixel boundaries. The formerly failing 1×1 border fixture now passes for 29/40/43% crops, four rotations and three output sizes. |
+| P2 | Output staging could select the destination itself as a temporary name, including Windows case variants | Skip matching destination filenames with Windows case rules; tests confirm the saved file survives cleanup. Temporary handles are flushed and closed before publication/replacement. |
+| P2 | SemVer's total ordering treated build metadata as an upgrade | Compare version precedence, with explicit equal-precedence build-metadata regression coverage. Reject repeated tag prefixes. |
+| P2 | EXE validation accepted only a six-byte signature/machine marker, and read before enforcing its size budget | Bound actual reads; validate PE32+ GUI image flags, optional-header bounds, directory count, section ranges and executable entry point. Matching hashes on malformed fixtures still fail. Update redirects require HTTPS. These are structural checks, not a guarantee of OS/runtime compatibility. |
+| P2 | PDF writer accepted nonfinite/invalid page or image dimensions; public native rendering lacked a pixel-budget guard | Reject invalid dimensions before writing a page or invoking WinRT. Tests cover bad dimensions without contaminating the next valid page. Source-document reads are bounded even if the source grows. |
+
+Additional regressions cover cancellation after rendering, a destination created during export, temporary-file cleanup, and native PDF round trips across three landscape sheets with crop, rotation, grayscale and a partial final sheet. The suite never opens a file/print dialog or sends a print job.
+
+## Product-design and rendering review
+
+Applied the product-design and rust-performance skills to source/configuration review. Centralized palette, type and spacing; simplified the toolbar and File menu; grouped sheet controls; moved crop and printer guidance into contextual sections; added download progress and a preview retry state. Numeric normal-state color checks give body/background contrast 14.58:1, secondary/background 6.08:1, primary text/button 7.70:1 and error/background 6.91:1. These calculations do not verify actual font rendering, disabled/focus states, scaling, clipping or keyboard access.
+
+No existing self-capture mode was present and no capture mode or GUI was launched, respecting the user's prohibition. Main and Settings screenshots remain pending. The rendering/load gate is **incomplete**, not passed: source inspection identifies eframe 0.33.3/glutin/glow with OpenGL presentation, bounded document workers and debounced application repaint requests. The pinned eframe scheduler contains Poll/Wait/WaitUntil transitions, so runtime frame/CPU evidence is still required. This pass retains the existing renderer; a CPU/software presenter has not been implemented or verified. Before future visual work, apply the current gate, then measure visible idle, hidden/minimized, restore, and draw/present behavior. No idle-load, smoothness or hidden-rendering claim is made.
+
 ## Required manual checks before publication
 
 1. Launch the packaged EXE on Windows 10 and 11 x64, including a machine without a separately installed Visual C++ redistributable. Verify first launch, missing OpenGL support errors, normal close, Unicode paths and a read-only executable folder.
@@ -42,7 +62,7 @@ These tests do not establish full PDF fidelity, actual printer output, a working
 4. Measure idle CPU and frame/presentation latency in an optimized packaged build with empty and populated layouts, minimized/restored and during interaction. No smoothness or low-CPU claim is made from source inspection.
 5. Only with later user authorization, print to a test destination: confirm driver paper/orientation mismatch and hard-margin rejection, one-up driver scaling, copies/collation, grayscale, multiple/partial sheets, cancellation, spooler errors and physical measurements. Do not treat a spooler success as confirmed paper output.
 6. With two controlled published test releases, verify disabled startup checks make no request, enabled checks are nonblocking, no-update/startup-error results stay unobtrusive, manual errors/rate limits are clear, and correct compatible assets are selected.
-7. Exercise download progress/cancellation, digest/size mismatch, unwritable directory, process-exit timing, replacement, rollback, restart, preserved settings and recovery from leftover `.exe.next`/staged/backup files. Never test this against the sole working installation or real user data.
+7. Exercise live download progress/cancellation, digest/size mismatch, unwritable directory, process-exit timing, actual executable replacement/rollback/restart, preserved settings and recovery from staged/backup/temporary files and helper error reports. File-transaction tests already cover synthetic replacement and failed-restart rollback; real process lifecycle remains unverified. Never test this against the sole working installation or real user data.
 8. Review dependency notices, intended repository/version/asset names, release notes and the unsigned executable's distribution experience. Publish only under separate explicit authorization through the connected GitHub plugin.
 
 Screenshots, UI/hardware validation, independent-viewer checks and live update checks remain deferred under the user's explicit no-GUI/no-device/no-publication constraints. There is no release in this session to compare against; the release-note document is an initial-capability draft.
