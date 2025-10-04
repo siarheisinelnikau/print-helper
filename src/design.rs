@@ -1,4 +1,4 @@
-use eframe::egui::{self, Color32, FontFamily, FontId, RichText, TextStyle, Vec2};
+use egui::{Color32, FontFamily, FontId, RichText, TextStyle, Vec2};
 
 pub const INK: Color32 = Color32::from_rgb(25, 39, 49);
 pub const SECONDARY: Color32 = Color32::from_rgb(79, 98, 109);
