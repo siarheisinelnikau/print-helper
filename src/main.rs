@@ -1,6 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-use eframe::egui::{self, RichText, TextureHandle, Vec2};
+use egui::{RichText, TextureHandle, Vec2};
 use print_helper::{
     layout::{Page, Paper, Project},
     settings::{self, Settings},
@@ -14,8 +14,10 @@ use std::{
 };
 
 mod design;
+#[cfg(windows)]
+mod native;
 
-fn main() -> eframe::Result {
+fn main() -> anyhow::Result<()> {
     let args: Vec<_> = std::env::args_os().collect();
     if args.get(1).is_some_and(|s| s == "--finish-update") {
         let result = (|| -> anyhow::Result<()> {
@@ -60,18 +62,22 @@ fn main() -> eframe::Result {
     {
         let _ = std::fs::remove_file(staged);
     }
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("PrintHelper")
-            .with_inner_size([1220.0, 850.0])
-            .with_min_inner_size([960.0, 640.0]),
-        ..Default::default()
+    let diagnostics = if args.get(1).is_some_and(|s| s == "--render-diagnostics") {
+        anyhow::ensure!(
+            args.len() == 3,
+            "Usage: PrintHelper --render-diagnostics <new-file.json>"
+        );
+        Some(PathBuf::from(&args[2]))
+    } else {
+        None
     };
-    eframe::run_native(
-        "PrintHelper",
-        options,
-        Box::new(move |cc| Ok(Box::new(App::new(cc, initial_error)))),
-    )
+    #[cfg(windows)]
+    return native::run(
+        move |ctx, wake| Box::new(App::new(ctx, wake, initial_error)),
+        diagnostics,
+    );
+    #[cfg(not(windows))]
+    anyhow::bail!("PrintHelper's native software window requires Windows");
 }
 
 #[derive(Clone, Copy)]
@@ -107,14 +113,19 @@ struct App {
     startup_check: bool,
     staged_update: Option<(PathBuf, String)>,
     installing: bool,
+    quit_requested: bool,
     downloading: bool,
     update_progress: Option<f32>,
     discard: Option<Discard>,
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>, initial_error: Option<String>) -> Self {
-        design::apply(&cc.egui_ctx);
+    fn new(
+        ctx: &egui::Context,
+        wake: print_helper::software::BackgroundWake,
+        initial_error: Option<String>,
+    ) -> Self {
+        design::apply(ctx);
         let (settings, error) = match settings::load() {
             Ok(s) => (s, initial_error),
             Err(e) => (
@@ -124,7 +135,7 @@ impl App {
                 Some(format!("{e:#}")),
             ),
         };
-        let mut network = Worker::new(cc.egui_ctx.clone());
+        let mut network = Worker::new(wake.clone());
         let startup_check = settings.startup_updates;
         if startup_check {
             network.submit(Task::CheckUpdate);
@@ -134,7 +145,7 @@ impl App {
                 format_version: 1,
                 ..Default::default()
             },
-            worker: Worker::new(cc.egui_ctx.clone()),
+            worker: Worker::new(wake),
             network,
             selected: 0,
             sheet: 0,
@@ -158,6 +169,7 @@ impl App {
             startup_check,
             staged_update: None,
             installing: false,
+            quit_requested: false,
             downloading: false,
             update_progress: None,
             discard: None,
@@ -319,7 +331,7 @@ impl App {
                                 "Download verified. Save your layout, then install and restart."
                                     .into();
                         }
-                        Ok(Outcome::Restart) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                        Ok(Outcome::Restart) => self.quit_requested = true,
                         Err(e) => {
                             self.installing = false;
                             self.update_status = e.clone();
@@ -706,7 +718,7 @@ impl App {
                             self.discard = None;
                             if matches!(action, Discard::Close) {
                                 self.dirty = false;
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                self.quit_requested = true;
                             } else {
                                 self.perform(action);
                             }
@@ -717,13 +729,23 @@ impl App {
     }
 }
 
-impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+impl print_helper::software::DesktopApp for App {
+    fn background(&mut self, ctx: &egui::Context) {
         self.receive(ctx);
-        if ctx.input(|i| i.viewport().close_requested()) && self.dirty {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+    }
+    fn request_close(&mut self, ctx: &egui::Context) -> bool {
+        if self.dirty {
             self.discard = Some(Discard::Close);
+            ctx.request_repaint();
+            false
+        } else {
+            true
         }
+    }
+    fn should_exit(&self) -> bool {
+        self.quit_requested
+    }
+    fn update(&mut self, ctx: &egui::Context) {
         self.toolbar(ctx);
         let before = self.project.clone();
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {

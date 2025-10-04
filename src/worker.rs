@@ -1,10 +1,10 @@
+use crate::software::BackgroundWake;
 use crate::{
     document::{self, Catalog},
     layout::{Page, Project},
     output, settings, updater,
 };
 use anyhow::{Context, Result, ensure};
-use eframe::egui;
 use image::RgbImage;
 use std::{
     path::PathBuf,
@@ -59,7 +59,7 @@ pub struct Worker {
     pub busy: bool,
 }
 impl Worker {
-    pub fn new(ctx: egui::Context) -> Self {
+    pub fn new(wake: BackgroundWake) -> Self {
         let (sender, tasks) = mpsc::sync_channel(1);
         let (events, receiver) = mpsc::sync_channel(4);
         let cancel = Arc::new(AtomicBool::new(false));
@@ -76,7 +76,7 @@ impl Worker {
             while let Ok(task) = tasks.recv() {
                 let progress = |message: String, ratio: f32| {
                     let _ = events.try_send(Event::Progress(message, ratio));
-                    ctx.request_repaint();
+                    wake.notify();
                 };
                 #[cfg(windows)]
                 let result = match &init {
@@ -93,7 +93,7 @@ impl Worker {
                 {
                     break;
                 }
-                ctx.request_repaint();
+                wake.notify();
             }
             drop(catalog);
             #[cfg(windows)]
