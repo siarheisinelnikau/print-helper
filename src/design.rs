@@ -10,6 +10,8 @@ pub const BORDER: Color32 = Color32::from_rgb(199, 210, 216);
 pub const ERROR: Color32 = Color32::from_rgb(159, 45, 54);
 
 pub fn apply(ctx: &egui::Context) {
+    // Preserve the existing light design before native input reports the OS theme.
+    ctx.set_theme(egui::Theme::Light);
     let mut style = (*ctx.style()).clone();
     style.visuals = egui::Visuals::light();
     style.visuals.override_text_color = Some(INK);
