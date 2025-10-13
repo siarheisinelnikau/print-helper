@@ -1,11 +1,13 @@
 //! Windows-only egui host. Rasterization is CPU-only; softbuffer presents via GDI.
 use anyhow::{Context as _, Result};
-use print_helper::software::{BackgroundWake, CpuFrame, DesktopApp, RepaintSchedule};
+use print_helper::software::{
+    BackgroundWake, CpuFrame, DesktopApp, MAX_FRAME_PIXELS, RepaintSchedule,
+};
 use serde::Serialize;
 use std::{num::NonZeroU32, path::PathBuf, sync::Arc, time::Instant};
 use winit::{
     application::ApplicationHandler,
-    dpi::LogicalSize,
+    dpi::{LogicalSize, PhysicalSize},
     event::WindowEvent,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     window::{Window, WindowId},
@@ -126,6 +128,9 @@ impl Host {
                     && n.window.is_minimized() != Some(true)
                     && size.width > 0
                     && size.height > 0
+                    && (size.width as usize)
+                        .checked_mul(size.height as usize)
+                        .is_some_and(|pixels| pixels <= MAX_FRAME_PIXELS)
             });
         self.schedule.set_drawable(drawable);
     }
@@ -315,7 +320,8 @@ impl ApplicationHandler<Wake> for Host {
                     Window::default_attributes()
                         .with_title("PrintHelper")
                         .with_inner_size(LogicalSize::new(1220.0, 850.0))
-                        .with_min_inner_size(LogicalSize::new(960.0, 640.0)),
+                        .with_min_inner_size(LogicalSize::new(960.0, 640.0))
+                        .with_max_inner_size(PhysicalSize::new(4000, 4000)),
                 )?,
             );
             let display = softbuffer::Context::new(window.clone())

@@ -29,11 +29,28 @@ def offset(rva):
     raise ValueError(f"Unmapped RVA {rva}")
 
 imports = []
-descriptor = offset(u32(optional + 112 + 8))
-while any(data[descriptor:descriptor + 20]):
-    name = offset(u32(descriptor + 12))
-    imports.append(data[name:data.index(0, name)].decode("ascii"))
-    descriptor += 20
+def dll_name(rva):
+    name = offset(rva)
+    return data[name:data.index(0, name)].decode("ascii")
+
+import_rva = u32(optional + 112 + 8)
+if import_rva:
+    descriptor = offset(import_rva)
+    while any(data[descriptor:descriptor + 20]):
+        imports.append(dll_name(u32(descriptor + 12)))
+        descriptor += 20
+# Delay-loaded graphics libraries must not bypass the normal import-table check.
+if u32(optional + 108) > 13:
+    delay_rva = u32(optional + 112 + 13 * 8)
+    if delay_rva:
+        descriptor = offset(delay_rva)
+        while any(data[descriptor:descriptor + 32]):
+            assert u32(descriptor) & 1, "Unsupported VA-based delay import descriptor"
+            imports.append(dll_name(u32(descriptor + 4)))
+            descriptor += 32
 assert not any(n.lower().startswith(("vcruntime", "msvcp")) for n in imports), "External MSVC redistributable dependency"
+forbidden = {"opengl32.dll", "libegl.dll", "libglesv2.dll", "d3d9.dll", "d3d11.dll", "d3d12.dll", "dxgi.dll", "vulkan-1.dll"}
+assert not (set(map(str.lower, imports)) & forbidden), "GPU/OpenGL presentation dependency"
+assert "gdi32.dll" in set(map(str.lower, imports)), "Missing Win32 GDI dependency"
 print(json.dumps({"path": str(path.resolve()), "architecture": "x64", "subsystem": "Windows GUI",
                   "size_bytes": len(data), "imports": sorted(imports)}, indent=2))
