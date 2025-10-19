@@ -17,7 +17,7 @@ Version **0.1.0**, local first-version build. The planned [canonical repository]
 
 ## Run and use
 
-Windows 10/11 x64 is the supported target. PDF rendering uses the Windows PDF API already provided by the OS; no PDF DLL, virtual printer, driver or service is installed. The MSVC runtime is linked statically. The UI uses eframe/egui with an OpenGL presenter; compatibility on the user's graphics hardware is pending.
+Windows 10/11 x64 is the supported target. PDF rendering uses the Windows PDF API already provided by the OS; no PDF DLL, virtual printer, driver or service is installed. The MSVC runtime is linked statically. The egui interface is rasterized on the CPU by `egui_software_backend`, then presented as a bitmap through softbuffer's Windows GDI backend. The application has no OpenGL or GPU UI backend. Windows desktop composition remains an OS responsibility. Native window behavior and actual idle/hidden load remain unverified because the GUI was not launched.
 
 1. Run `dist/PrintHelper-v0.1.0.exe` from a writable folder.
 2. Choose **Add files…**. Click a page thumbnail, then use Up/Down/Remove and the Selected page controls. Expand **Crop margins** when needed.
@@ -40,6 +40,8 @@ Limits: 500 project pages, 64 MiB per input, 256 MiB combined source cost (compr
 
 Source thumbnails are color previews. Edited thumbnails refresh on selection; after a bulk crop, unvisited pages can show a refresh notice until selected. The output-sheet preview always uses all current transforms.
 
+The software window framebuffer is capped at 16 megapixels, with a 4000×4000 physical-pixel maximum client size. UI layout/rasterization is suspended for hidden, minimized or occluded windows. Background document/update results continue to be processed, preserving texture changes for the next visible frame. Unchanged OS repaint requests reuse the retained bitmap. These scheduling properties have headless policy tests; real Windows integration and performance still need manual validation.
+
 ## Updates
 
 Startup checks are enabled by default, run off the UI thread, and make a public HTTPS request to the canonical repository's latest stable release. Turn off **Check for updates on startup** to prevent that startup request; manual checks remain available. No-update and transient startup errors appear only in Settings. An unpublished repository, missing release, API limit or network error is reported as unavailable, never as up to date.
@@ -50,15 +52,18 @@ The updater requires a writable application folder; it never requests elevation.
 
 ## Build and verify
 
-Use a Windows x64 MSVC Rust toolchain (Rust 1.92 or later) and the Windows SDK/linker. Dependencies are pinned in `Cargo.lock`. Builds use at most two Cargo jobs and a repository-local `target` directory.
+Use a Windows x64 MSVC Rust toolchain (Rust 1.92 or later) and the Windows SDK/linker. Python 3.10 or later is used by the dependency/PE checks and license-notice generator. Dependencies are pinned in `Cargo.lock`. Builds use at most two Cargo jobs and a repository-local `target` directory.
 
 ```powershell
 Set-Location E:\work\github\print-helper
 ./scripts/check.ps1 -Offline
 ./scripts/package.ps1 -Offline
+python ./scripts/inspect-pe.py ./dist/PrintHelper-v0.1.0.exe
 ```
 
-Omit `-Offline` on a machine that needs to resolve dependencies. Packaging produces `dist/PrintHelper-v0.1.0.exe` and `dist/SHA256SUMS.txt`, with license notices. It does not start the application or publish anything. CI runs the same synthetic checks on Windows and retains an artifact without creating a release.
+Omit `-Offline` on a machine that needs to resolve dependencies. Packaging produces `dist/PrintHelper-v0.1.0.exe` and `dist/SHA256SUMS.txt`, with license notices. It does not start the application or publish anything. CI checks the active Windows dependency graph, tests synthetic fixtures, rejects direct/delay-loaded OpenGL/GPU imports, and retains an artifact without creating a release.
+
+For a later permitted runtime check, `PrintHelper-v0.1.0.exe --render-diagnostics <new-file.json>` runs the normal application and saves aggregate UI/raster/presentation counts and maximum durations when it exits. It is not a capture or benchmark mode and was not invoked during this no-GUI session. Measure process CPU and observe idle/minimized/restored behavior separately; diagnostic counters alone do not certify responsiveness.
 
 See [architecture](docs/ARCHITECTURE.md), [validation and remaining checks](docs/VALIDATION.md), and the [initial release-note draft](docs/RELEASE_NOTES_v0.1.0.md).
 
