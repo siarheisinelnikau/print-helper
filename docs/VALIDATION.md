@@ -4,15 +4,16 @@ Date: 2026-10-31. Scope: code-only development on Windows x64 with rustc 1.96.1 
 
 ## Automated checks
 
-Current review result: formatting passed, Clippy passed with warnings denied for application code, and all **20 tests** passed (3 file-transaction unit tests, 12 document/export integration tests and 5 update integration tests). Checks used static MSVC runtime linking. The release/package script completed successfully. Read-only PE inspection confirmed x64, Windows GUI subsystem and only Windows system DLL imports, without VCRUNTIME/MSVCP. The initial implementation had 10 tests; the current suite adds the regressions listed below.
+Current software-rendering result: formatting and Clippy passed; all **27 tests** passed (3 file-transaction unit tests, 12 document/export integration tests, 5 update integration tests and 7 software-rendering tests). Checks use static MSVC runtime linking. The active Windows dependency graph contains egui, egui-winit, egui_software_backend, softbuffer and winit, and excludes eframe/glow/glutin/wgpu and other GPU backends. The first implementation had 10 tests and the subsequent code review had 20; the software migration adds seven headless regressions.
 
-Artifact: `dist/PrintHelper-v0.1.0.exe`, 9,241,088 bytes. SHA-256: `0ebac3271242564357a23c62887d68bb9ce5e26dcb48c8124cadb52578a8a74c`. The EXE was inspected without execution.
+Artifact: `dist/PrintHelper-v0.1.0.exe`, 8,840,704 bytes. SHA-256: `0857c3b7b13aa5038dd1e05339a1397fd4e7e834b8f3c44491ae61a0f00784cd`. The release build completed successfully. Read-only inspection of normal and delay imports passed: GDI is present; OpenGL/GPU presentation and external VCRUNTIME/MSVCP imports are absent. The packaged license notices match the regenerated notices for 157 dependency packages. The EXE was never executed.
 
 - `cargo fmt --all -- --check`: formatting.
 - `cargo clippy --offline --all-targets -- -D warnings`: all application/library/test targets.
-- `cargo test --offline --locked`: twenty synthetic tests, including the built-in Windows PDF renderer and file transactions with fake restart callbacks.
+- `cargo test --offline --locked`: twenty-seven synthetic tests, including Windows PDF rendering, file transactions with fake restart callbacks, and CPU rasterization in memory.
 - `scripts/package.ps1 -Offline`: optimized Windows x64 GUI executable, versioned name, SHA256SUMS and license notices. Static MSVC runtime is selected in the repository configuration.
-- `python scripts/inspect-pe.py dist/PrintHelper-v0.1.0.exe`: read-only architecture/subsystem/import-table check; the script rejects external VCRUNTIME/MSVCP imports. It never executes the application.
+- `python scripts/check-software-backend.py`: inspect the active Windows dependency tree and reject OpenGL/GPU backend packages. Also runs through scripts/check.ps1 and CI.
+- `python scripts/inspect-pe.py dist/PrintHelper-v0.1.0.exe`: read-only architecture/subsystem/direct-and-delay-import check; rejects VCRUNTIME/MSVCP and OpenGL/GPU presentation imports and requires GDI. It never executes the application.
 - `python scripts/generate-notices.py`: collect license/notice texts for the locked Windows dependency graph, including font licenses. Standard license texts supplement crates that do not package their declared license file.
 
 Dependency network retrieval initially failed with `getaddrinfo() thread failed to start`. Implementation uses cached dependencies and the OS PDF renderer, and the Cargo lockfile resolves offline. Cargo reported that incremental-cache hard links were unavailable and copied cache files instead. This environment limitation did not block compilation or tests. Application output publication uses Windows MoveFileEx without replacement and does not depend on hard links.
@@ -34,6 +35,14 @@ Dependency network retrieval initially failed with `getaddrinfo() thread failed 
 
 These tests do not establish full PDF fidelity, actual printer output, a working self-update cycle, or the visual quality/responsiveness of the GUI.
 
+## Software migration evidence
+
+The CPU path is `egui -> egui_software_backend 0.0.2 -> retained BGRA bitmap -> softbuffer 0.4.8 Win32 DIB/BitBlt`. The exact pinned crate sources were inspected, including software rasterization, texture handling and the Windows GDI presenter. eframe, glow and glutin have been removed rather than selecting a software adapter behind a GPU API. Windows compositor behavior and internals of Windows PDF rendering are outside this UI-backend claim.
+
+Seven in-memory tests establish: idle/timed invalidation settles; queued redraws do not retain expired timers; hidden requests wait for restore; exposure can reuse the retained frame; independent worker wakeups coalesce but continue without GUI frames; texture partial updates/frees, resizing and BGRA colors work; a font-atlas upload from a suppressed frame survives; invalid/oversized framebuffers fail without losing the last bitmap. These cases are grouped in seven tests. No winit event loop, native window, GDI surface, application instance or screenshot is created by these tests.
+
+An initial texture test reproduced stale pixels in the renderer library's mesh cache after a partial texture update. That cache is disabled; the whole-window retained bitmap still avoids rasterization for unchanged OS exposures. Independent background wakeups avoid relying on an already-pending egui repaint while hidden. UI layout is separated from result/close processing. The native maximum client size is 4000×4000 physical pixels, within a 16-megapixel framebuffer budget.
+
 ## Code-review findings and fixes
 
 | Priority | Finding | Fix and evidence |
@@ -52,11 +61,11 @@ Additional regressions cover cancellation after rendering, a destination created
 
 Applied the product-design and rust-performance skills to source/configuration review. Centralized palette, type and spacing; simplified the toolbar and File menu; grouped sheet controls; moved crop and printer guidance into contextual sections; added download progress and a preview retry state. Numeric normal-state color checks give body/background contrast 14.58:1, secondary/background 6.08:1, primary text/button 7.70:1 and error/background 6.91:1. These calculations do not verify actual font rendering, disabled/focus states, scaling, clipping or keyboard access.
 
-No existing self-capture mode was present and no capture mode or GUI was launched, respecting the user's prohibition. Main and Settings screenshots remain pending. The rendering/load gate is **incomplete**, not passed: source inspection identifies eframe 0.33.3/glutin/glow with OpenGL presentation, bounded document workers and debounced application repaint requests. The pinned eframe scheduler contains Poll/Wait/WaitUntil transitions, so runtime frame/CPU evidence is still required. This pass retains the existing renderer; a CPU/software presenter has not been implemented or verified. Before future visual work, apply the current gate, then measure visible idle, hidden/minimized, restore, and draw/present behavior. No idle-load, smoothness or hidden-rendering claim is made.
+No capture mode, GUI or computer use was launched, respecting the user's prohibition. Main and Settings screenshots remain pending. The rendering/load gate is **incomplete**, not passed: source and headless tests now establish a CPU rasterizer and GDI presenter with Wait/WaitUntil scheduling, while real native-window behavior is unmeasured. The old eframe/OpenGL path from the earlier review is superseded by this migration. For a later permitted run, `--render-diagnostics <new-file.json>` records aggregate UI/raster/presentation counts, suppressed redraws and stage timings at shutdown. It runs the normal application and is not a self-capture or benchmark mode; it was not invoked here. Before future visual work, apply the current gate and measure visible idle, hidden/minimized, restore, and draw/present behavior. No idle-load, smoothness or complete-UI visual claim is made from these code-only checks.
 
 ## Required manual checks before publication
 
-1. Launch the packaged EXE on Windows 10 and 11 x64, including a machine without a separately installed Visual C++ redistributable. Verify first launch, missing OpenGL support errors, normal close, Unicode paths and a read-only executable folder.
+1. When GUI testing is permitted, launch the packaged EXE on Windows 10 and 11 x64, including a machine without a separately installed Visual C++ redistributable. Verify the CPU/GDI backend, native bitmap presentation, initialization failures, normal/unsaved close, Unicode paths and a read-only executable folder. Inspect runtime backend evidence; a PE import check alone does not measure running behavior.
 2. Check page-list selection, keyboard/mouse focus, reorder/delete/rotate/crop, bulk crop, Undo/Redo, project open/save cancellation, unsaved-change prompts, preview sheet navigation, 100/150/200% display scaling and minimum window size. Capture real main-window and Settings screenshots, then embed them in README.
 3. Review representative PDFs in an independent PDF viewer: embedded/nonembedded fonts, mixed page sizes, intrinsic rotation, CropBox/MediaBox differences, transparency, annotations/forms, grayscale photographs, TIFF first-frame behavior, EXIF orientation, fine lines and small text at both DPI settings. Confirm export dimensions/ordering after deleting pages and across multiple sheets.
 4. Measure idle CPU and frame/presentation latency in an optimized packaged build with empty and populated layouts, minimized/restored and during interaction. No smoothness or low-CPU claim is made from source inspection.

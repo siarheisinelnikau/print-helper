@@ -20,6 +20,12 @@ Prepare multi-page print layouts from PDF and image inputs in an independent Win
 - Compare SemVer precedence without build metadata, reject malformed executable headers/sections and enforce HTTPS throughout update redirects.
 - Consolidate the toolbar, give PDF export primary emphasis, group crop controls and replace technical paragraphs with contextual help. Settings shows download progress and a download-specific cancel action; failed previews offer retry.
 
+## Software rendering
+
+- Replace eframe/glow/OpenGL with a CPU egui rasterizer and Windows GDI bitmap presentation.
+- Retain the last bitmap for unchanged OS exposures, and suspend UI drawing while hidden/minimized/occluded while still handling background results and shutdown.
+- Preserve pending texture/font updates across suppressed frames. Add headless raster and scheduling tests, a rendering diagnostics flag, and CI checks against GPU/OpenGL dependency/import regressions.
+
 ## Platform and download
 
 Planned asset: `PrintHelper-v0.1.0.exe`, Windows 10/11 x64. Uses the built-in Windows PDF renderer; no PDF companion DLL, printer driver or service. Include `SHA256SUMS.txt` and third-party license notices with the executable.
