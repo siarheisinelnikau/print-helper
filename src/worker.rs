@@ -1,5 +1,6 @@
 use crate::software::BackgroundWake;
 use crate::{
+    dialogs,
     document::{self, Catalog},
     layout::{Page, Project},
     output, settings, updater,
@@ -171,13 +172,7 @@ fn run(
             Ok(Outcome::Cancelled)
         }
         Task::Import(existing) => {
-            let Some(paths) = rfd::FileDialog::new()
-                .add_filter(
-                    "PDF and images",
-                    &["pdf", "png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp"],
-                )
-                .pick_files()
-            else {
+            let Some(paths) = dialogs::pick_inputs()? else {
                 return Ok(Outcome::Cancelled);
             };
             let mut pending = catalog.clone();
@@ -191,10 +186,7 @@ fn run(
             Ok(Outcome::Imported(pages.into_iter().zip(images).collect()))
         }
         Task::Open => {
-            let Some(path) = rfd::FileDialog::new()
-                .add_filter("PrintHelper project", &["phlayout"])
-                .pick_file()
-            else {
+            let Some(path) = dialogs::open_layout()? else {
                 return Ok(Outcome::Cancelled);
             };
             ensure!(
@@ -230,11 +222,7 @@ fn run(
         }
         Task::Save(project) => {
             project.validate()?;
-            let Some(path) = rfd::FileDialog::new()
-                .add_filter("PrintHelper project", &["phlayout"])
-                .set_file_name("Layout.phlayout")
-                .save_file()
-            else {
+            let Some(path) = dialogs::save_layout()? else {
                 return Ok(Outcome::Cancelled);
             };
             output::save_new(&path, &serde_json::to_vec_pretty(&project)?)?;
@@ -263,11 +251,7 @@ fn run(
             })
         }
         Task::Export(project) => {
-            let Some(path) = rfd::FileDialog::new()
-                .add_filter("PDF document", &["pdf"])
-                .set_file_name("PrintHelper-output.pdf")
-                .save_file()
-            else {
+            let Some(path) = dialogs::export_pdf()? else {
                 return Ok(Outcome::Cancelled);
             };
             output::export(&project, catalog, &path, cancel, |i, n| {
