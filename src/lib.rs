@@ -1,3 +1,4 @@
+mod dialogs;
 pub mod document;
 pub mod layout;
 pub mod output;
