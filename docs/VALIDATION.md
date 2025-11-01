@@ -4,13 +4,13 @@ Date: 2026-10-31. Scope: code-only development on Windows x64 with rustc 1.96.1 
 
 ## Automated checks
 
-Current software-rendering result: formatting and Clippy passed; all **27 tests** passed (3 file-transaction unit tests, 12 document/export integration tests, 5 update integration tests and 7 software-rendering tests). Checks use static MSVC runtime linking. The active Windows dependency graph contains egui, egui-winit, egui_software_backend, softbuffer and winit, and excludes eframe/glow/glutin/wgpu and other GPU backends. The first implementation had 10 tests and the subsequent code review had 20; the software migration adds seven headless regressions.
+Current file-dialog fix result: formatting and Clippy passed; all **30 tests** passed (3 dialog-apartment unit tests, 3 file-transaction unit tests, 12 document/export integration tests, 5 update integration tests and 7 software-rendering tests). Checks use static MSVC runtime linking. The active Windows dependency graph contains egui, egui-winit, egui_software_backend, softbuffer and winit, and excludes eframe/glow/glutin/wgpu and other GPU backends. The initial implementation had 10 tests, code review brought that to 20, and software rendering to 27; the picker fix adds three noninteractive regressions.
 
-Artifact: `dist/PrintHelper-v0.1.0.exe`, 8,840,704 bytes. SHA-256: `0857c3b7b13aa5038dd1e05339a1397fd4e7e834b8f3c44491ae61a0f00784cd`. The release build completed successfully. Read-only inspection of normal and delay imports passed: GDI is present; OpenGL/GPU presentation and external VCRUNTIME/MSVCP imports are absent. The packaged license notices match the regenerated notices for 157 dependency packages. The EXE was never executed.
+Artifact: `dist/PrintHelper-v0.1.0.exe`, 8,864,768 bytes. SHA-256: `2417e2e619c071d0810884f15d0f6d2fa4b808d5bcbecd5f983916cb0ab1c4bc`. The release build completed successfully. Read-only inspection of normal and delay imports passed: GDI is present; OpenGL/GPU presentation and external VCRUNTIME/MSVCP imports are absent. The EXE was never executed by the agent.
 
 - `cargo fmt --all -- --check`: formatting.
 - `cargo clippy --offline --all-targets -- -D warnings`: all application/library/test targets.
-- `cargo test --offline --locked`: twenty-seven synthetic tests, including Windows PDF rendering, file transactions with fake restart callbacks, and CPU rasterization in memory.
+- `cargo test --offline --locked`: thirty noninteractive tests, including COM apartment isolation, Windows PDF rendering, file transactions with fake restart callbacks, and CPU rasterization in memory.
 - `scripts/package.ps1 -Offline`: optimized Windows x64 GUI executable, versioned name, SHA256SUMS and license notices. Static MSVC runtime is selected in the repository configuration.
 - `python scripts/check-software-backend.py`: inspect the active Windows dependency tree and reject OpenGL/GPU backend packages. Also runs through scripts/check.ps1 and CI.
 - `python scripts/inspect-pe.py dist/PrintHelper-v0.1.0.exe`: read-only architecture/subsystem/direct-and-delay-import check; rejects VCRUNTIME/MSVCP and OpenGL/GPU presentation imports and requires GDI. It never executes the application.
@@ -44,6 +44,8 @@ Seven in-memory tests establish: idle/timed invalidation settles; queued redraws
 An initial texture test reproduced stale pixels in the renderer library's mesh cache after a partial texture update. That cache is disabled; the whole-window retained bitmap still avoids rasterization for unchanged OS exposures. Independent background wakeups avoid relying on an already-pending egui repaint while hidden. UI layout is separated from result/close processing. The native maximum client size is 4000×4000 physical pixels, within a 16-megapixel framebuffer budget.
 
 ## Code-review findings and fixes
+
+The reported nonworking **Add files** action had a confirmed downstream cause: the document worker is initialized with `RoInitialize(RO_INIT_MULTITHREADED)`, while rfd's synchronous Windows picker calls `CoInitializeEx(COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)`. The old call was reproduced returning `RPC_E_CHANGED_MODE` (0x80010106), which rfd converts to `None`, indistinguishable from cancellation. All pickers now run through a fresh STA thread. Tests verify rfd's initialization flags succeed there, the caller remains MTA, cancellation/setup errors remain distinct at the thread boundary, and a failed dialog thread does not disable the next request. Tests create no dialog objects or windows. Actual picker display, foreground/focus and user selection remain unverified under the no-GUI constraint.
 
 | Priority | Finding | Fix and evidence |
 | --- | --- | --- |
