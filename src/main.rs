@@ -617,17 +617,17 @@ impl App {
                     }
                 });
                 let n = self.project.pages.len();
-                design::help(
-                    ui,
-                    format!("{n} pages → {count} sheets · placement preview"),
-                );
-                if self.preview_failed && count > 0 {
-                    ui.colored_label(design::ERROR, "Preview unavailable for this layout.");
-                    if ui.button("Retry preview").clicked() {
-                        self.requested = None;
-                    }
-                } else if self.preview_revision != Some(self.revision) && count > 0 {
-                    ui.label("Updating preview…");
+                let state = if count == 0 {
+                    design::PreviewState::Empty
+                } else if self.preview_failed {
+                    design::PreviewState::Failed
+                } else if self.preview_revision != Some(self.revision) {
+                    design::PreviewState::Updating
+                } else {
+                    design::PreviewState::Ready
+                };
+                if design::preview_status(ui, n, count, state) {
+                    self.requested = None;
                 }
                 if count == 0 {
                     ui.add_space(80.0);
@@ -748,32 +748,29 @@ impl print_helper::software::DesktopApp for App {
     fn update(&mut self, ctx: &egui::Context) {
         self.toolbar(ctx);
         let before = self.project.clone();
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+        design::status_panel(ctx, |ui| {
             if let Some((text, ratio)) = &self.progress {
-                ui.add(egui::ProgressBar::new(*ratio).text(text));
+                ui.add_sized([160.0, 20.0], egui::ProgressBar::new(*ratio).text(text));
             }
-            ui.horizontal_wrapped(|ui| {
-                if self.dirty {
-                    ui.label(RichText::new("Unsaved layout").strong());
-                    ui.separator();
+            if self.dirty {
+                ui.label(RichText::new("Unsaved layout").strong());
+                ui.separator();
+            }
+            if let Some(update) = &self.update
+                && ui
+                    .link(format!("Update {} available", update.version))
+                    .clicked()
+            {
+                self.settings_open = true;
+            }
+            if self.worker.busy {
+                ui.label("Working...");
+                if ui.button("Cancel").clicked() {
+                    self.worker.cancel.store(true, Ordering::Relaxed);
                 }
-                if let Some(update) = &self.update
-                    && ui
-                        .link(format!("Update {} available", update.version))
-                        .clicked()
-                {
-                    self.settings_open = true;
-                }
-                if self.worker.busy {
-                    ui.spinner();
-                    ui.label("Working…");
-                    if ui.button("Cancel").clicked() {
-                        self.worker.cancel.store(true, Ordering::Relaxed);
-                    }
-                }
-                ui.add(egui::Label::new(&self.status).truncate())
-                    .on_hover_text(&self.status);
-            });
+            }
+            ui.add(egui::Label::new(&self.status).truncate())
+                .on_hover_text(&self.status);
         });
         self.pages_panel(ctx);
         self.layout_panel(ctx);
