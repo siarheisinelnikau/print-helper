@@ -10,7 +10,8 @@ use winit::{
     dpi::{LogicalSize, PhysicalSize},
     event::WindowEvent,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    window::{Window, WindowId},
+    platform::windows::{IconExtWindows, WindowAttributesExtWindows},
+    window::{Icon, Window, WindowId},
 };
 
 #[derive(Debug)]
@@ -319,6 +320,14 @@ impl ApplicationHandler<Wake> for Host {
                 event_loop.create_window(
                     Window::default_attributes()
                         .with_title("PrintHelper")
+                        .with_window_icon(Some(Icon::from_resource(
+                            1,
+                            Some(PhysicalSize::new(32, 32)),
+                        )?))
+                        .with_taskbar_icon(Some(Icon::from_resource(
+                            1,
+                            Some(PhysicalSize::new(256, 256)),
+                        )?))
                         .with_inner_size(LogicalSize::new(1220.0, 850.0))
                         .with_min_inner_size(LogicalSize::new(960.0, 640.0))
                         .with_max_inner_size(PhysicalSize::new(4000, 4000)),

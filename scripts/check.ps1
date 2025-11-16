@@ -5,6 +5,8 @@ Push-Location -LiteralPath $taskRoot
 try {
     & cargo fmt --all -- --check
     if ($LASTEXITCODE -ne 0) { throw 'Formatting failed.' }
+    & python (Join-Path $PSScriptRoot 'generate-icon.py') --check
+    if ($LASTEXITCODE -ne 0) { throw 'Icon assets are stale.' }
     & python (Join-Path $PSScriptRoot 'check-software-backend.py')
     if ($LASTEXITCODE -ne 0) { throw 'Software backend dependency check failed.' }
     $cargoArgs = @('--locked', '--jobs', '2', '--target-dir', (Join-Path $taskRoot 'target'))
