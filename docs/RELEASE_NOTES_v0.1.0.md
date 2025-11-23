@@ -13,8 +13,9 @@ Prepare multi-page print layouts from PDF and image inputs in an independent Win
 
 ## Fixed during local review
 
+- Embed the original printer icon in the standalone EXE and use it for the window and taskbar. All nine resolutions are verified in the packaged resources; native appearance remains pending GUI validation.
+- Keep preview loading/retry status in one stable row and bottom progress in a fixed-height panel, preventing state changes from resizing or moving the sheet in headless layout tests. Replace the unsupported arrow glyph with readable page/sheet counts.
 - Open Add files and the other file pickers on an isolated STA thread instead of the PDF worker's MTA, eliminating the confirmed COM-mode conflict that silently cancelled picker startup. Noninteractive apartment regressions cover this fix; actual picker interaction remains pending.
-
 - Crop original image pixels before scaling so discarded borders do not contaminate previews or exported pages.
 - Reject invalid PDF page/image dimensions and guard temporary-file destinations, including Windows filename case variants.
 - Preserve a flushed executable backup and restore it when replacement or restart fails; close staging handles before Windows file replacement.

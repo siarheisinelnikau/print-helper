@@ -52,7 +52,7 @@ The updater requires a writable application folder; it never requests elevation.
 
 ## Build and verify
 
-Use a Windows x64 MSVC Rust toolchain (Rust 1.92 or later) and the Windows SDK/linker. Python 3.10 or later is used by the dependency/PE checks and license-notice generator. Dependencies are pinned in `Cargo.lock`. Builds use at most two Cargo jobs and a repository-local `target` directory.
+Use a Windows x64 MSVC Rust toolchain (Rust 1.92 or later) and the Windows SDK/linker, including `rc.exe` for the embedded icon and version resources. Python 3.10 or later is used by the dependency/PE checks, icon generator and license-notice generator. Dependencies are pinned in `Cargo.lock`. Builds use at most two Cargo jobs and a repository-local `target` directory.
 
 ```powershell
 Set-Location E:\work\github\print-helper
@@ -61,7 +61,9 @@ Set-Location E:\work\github\print-helper
 python ./scripts/inspect-pe.py ./dist/PrintHelper-v0.1.0.exe
 ```
 
-Omit `-Offline` on a machine that needs to resolve dependencies. Packaging produces `dist/PrintHelper-v0.1.0.exe` and `dist/SHA256SUMS.txt`, with license notices. It does not start the application or publish anything. CI checks the active Windows dependency graph, tests synthetic fixtures, rejects direct/delay-loaded OpenGL/GPU imports, and retains an artifact without creating a release.
+Omit `-Offline` on a machine that needs to resolve dependencies. Packaging produces `dist/PrintHelper-v0.1.0.exe` and `dist/SHA256SUMS.txt`, with license notices. It does not start the application or publish anything. CI checks the active Windows dependency graph, tests synthetic fixtures, verifies linked icon pixels, rejects direct/delay-loaded OpenGL/GPU imports, and retains an artifact without creating a release.
+
+The original printer icon is defined in `assets/app-icon.svg`. After editing it, run `python scripts/generate-icon.py` to regenerate the PNG and multi-resolution ICO using the script's supported rectangle/circle subset. The normal check script verifies these assets are current. All icon sizes are embedded in the executable; the title bar and taskbar load the same resource without external asset files.
 
 For a later permitted runtime check, `PrintHelper-v0.1.0.exe --render-diagnostics <new-file.json>` runs the normal application and saves aggregate UI/raster/presentation counts and maximum durations when it exits. It is not a capture or benchmark mode and was not invoked during this no-GUI session. Measure process CPU and observe idle/minimized/restored behavior separately; diagnostic counters alone do not certify responsiveness.
 
