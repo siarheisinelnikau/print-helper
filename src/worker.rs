@@ -8,6 +8,7 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use image::RgbImage;
 use std::{
+    collections::VecDeque,
     path::PathBuf,
     sync::{
         Arc,
@@ -24,9 +25,9 @@ pub enum Task {
     Preview {
         project: Project,
         sheet: usize,
-        selected: usize,
         revision: u64,
     },
+    Thumbnail(Page),
     Export(Project),
     Print(Project),
     Settings(settings::Settings),
@@ -37,12 +38,8 @@ pub enum Task {
 pub enum Outcome {
     Imported(Vec<(Page, RgbImage)>),
     Opened(Project, Vec<RgbImage>),
-    Preview {
-        revision: u64,
-        image: RgbImage,
-        page: Page,
-        thumbnail: RgbImage,
-    },
+    Preview { revision: u64, image: RgbImage },
+    Thumbnail { page: Page, image: RgbImage },
     Message(String),
     Cancelled,
     Checked(Option<updater::Update>),
@@ -53,15 +50,23 @@ pub enum Event {
     Progress(String, f32),
     Finished(std::result::Result<Outcome, String>),
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkKind {
+    Preview,
+    Thumbnail,
+    Foreground,
+}
+
 pub struct Worker {
     sender: SyncSender<Task>,
     pub receiver: Receiver<Event>,
     pub cancel: Arc<AtomicBool>,
-    pub busy: bool,
+    in_flight: VecDeque<WorkKind>,
 }
 impl Worker {
     pub fn new(wake: BackgroundWake) -> Self {
-        let (sender, tasks) = mpsc::sync_channel(1);
+        // Reserve room for one explicit action behind an in-progress preview.
+        let (sender, tasks) = mpsc::sync_channel(2);
         let (events, receiver) = mpsc::sync_channel(4);
         let cancel = Arc::new(AtomicBool::new(false));
         let stop = cancel.clone();
@@ -81,13 +86,18 @@ impl Worker {
                 };
                 #[cfg(windows)]
                 let result = match &init {
+                    Ok(_) if stop.load(Ordering::Relaxed) => Ok(Outcome::Cancelled),
                     Ok(_) => run(task, &mut catalog, &stop, progress),
                     Err(e) => Err(anyhow::anyhow!(
                         "Windows Runtime initialization failed: {e}"
                     )),
                 };
                 #[cfg(not(windows))]
-                let result = run(task, &mut catalog, &stop, progress);
+                let result = if stop.load(Ordering::Relaxed) {
+                    Ok(Outcome::Cancelled)
+                } else {
+                    run(task, &mut catalog, &stop, progress)
+                };
                 if events
                     .send(Event::Finished(result.map_err(|e| format!("{e:#}"))))
                     .is_err()
@@ -108,20 +118,35 @@ impl Worker {
             sender,
             receiver,
             cancel,
-            busy: false,
+            in_flight: VecDeque::with_capacity(2),
         }
     }
     pub fn submit(&mut self, task: Task) -> bool {
-        if self.busy {
+        let kind = match &task {
+            Task::Preview { .. } => WorkKind::Preview,
+            Task::Thumbnail(_) => WorkKind::Thumbnail,
+            _ => WorkKind::Foreground,
+        };
+        if self.is_busy() && (kind != WorkKind::Foreground || self.foreground_busy()) {
             return false;
         }
         self.cancel.store(false, Ordering::Relaxed);
         if self.sender.try_send(task).is_ok() {
-            self.busy = true;
+            self.in_flight.push_back(kind);
             true
         } else {
             false
         }
+    }
+    pub fn is_busy(&self) -> bool {
+        !self.in_flight.is_empty()
+    }
+    pub fn foreground_busy(&self) -> bool {
+        self.in_flight.contains(&WorkKind::Foreground)
+    }
+    /// Acknowledge exactly one Finished event; queued actions remain busy.
+    pub fn finish(&mut self) -> Option<WorkKind> {
+        self.in_flight.pop_front()
     }
 }
 impl Drop for Worker {
@@ -231,24 +256,16 @@ fn run(
         Task::Preview {
             project,
             sheet,
-            selected,
             revision,
         } => {
-            let page = project
-                .pages
-                .get(selected)
-                .context("Select a page")?
-                .clone();
-            let thumbnail = thumb(&page, catalog)?;
             let (w, h) = project.layout.paper_pt();
             let dpi = (1000.0 / w.max(h) * 72.0).clamp(10.0, 100.0);
             let image = output::render_sheet(&project, catalog, sheet, dpi)?;
-            Ok(Outcome::Preview {
-                revision,
-                image,
-                page,
-                thumbnail,
-            })
+            Ok(Outcome::Preview { revision, image })
+        }
+        Task::Thumbnail(page) => {
+            let image = thumb(&page, catalog)?;
+            Ok(Outcome::Thumbnail { page, image })
         }
         Task::Export(project) => {
             let Some(path) = dialogs::export_pdf()? else {
@@ -291,5 +308,109 @@ fn run(
                 update.asset.digest.context("Missing update digest")?,
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sheet_render_does_not_depend_on_a_selected_thumbnail_from_another_sheet() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(".test-output")
+            .join(format!(
+                "worker-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("generated.png");
+        let color = image::Rgb([170, 30, 60]);
+        RgbImage::from_pixel(60, 80, color).save(&path).unwrap();
+        let mut catalog = Catalog::new();
+        let pages = document::import(std::slice::from_ref(&path), &mut catalog).unwrap();
+        let page = pages[0].clone();
+        let mut missing = page.clone();
+        missing.path = root.join("absent.png");
+        let project = Project {
+            format_version: 1,
+            pages: vec![page.clone(), missing.clone()],
+            layout: crate::layout::Layout {
+                per_sheet: 1,
+                ..Default::default()
+            },
+        };
+        let cancel = AtomicBool::new(false);
+        let no_progress =
+            |_: String, _: f32| panic!("Background render must not show task progress");
+        let result = run(
+            Task::Preview {
+                project,
+                sheet: 0,
+                revision: 9,
+            },
+            &mut catalog,
+            &cancel,
+            no_progress,
+        )
+        .unwrap();
+        let Outcome::Preview { revision, image } = result else {
+            panic!("Expected sheet")
+        };
+        assert_eq!(revision, 9);
+        assert_eq!(
+            *image.get_pixel(image.width() / 2, image.height() / 2),
+            color
+        );
+        assert!(run(Task::Thumbnail(missing), &mut catalog, &cancel, no_progress).is_err());
+        let result = run(Task::Thumbnail(page), &mut catalog, &cancel, no_progress).unwrap();
+        let Outcome::Thumbnail { image, .. } = result else {
+            panic!("Expected thumbnail")
+        };
+        assert!(image.width() <= 120 && image.height() <= 150);
+        assert_eq!(
+            *image.get_pixel(image.width() / 2, image.height() / 2),
+            color
+        );
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_action_can_queue_behind_preview_without_disabling_controls_first() {
+        // No worker thread executes these tasks: inspect the real dispatch boundary.
+        let (sender, tasks) = mpsc::sync_channel(2);
+        let (_events, receiver) = mpsc::sync_channel(4);
+        let mut worker = Worker {
+            sender,
+            receiver,
+            cancel: Arc::new(AtomicBool::new(false)),
+            in_flight: VecDeque::with_capacity(2),
+        };
+        let preview = || Task::Preview {
+            project: Project::default(),
+            sheet: 0,
+            revision: 1,
+        };
+        assert!(worker.submit(preview()));
+        assert!(worker.is_busy());
+        assert!(!worker.foreground_busy());
+        assert!(!worker.submit(preview()));
+        assert!(worker.submit(Task::Clear));
+        assert!(worker.foreground_busy());
+        assert!(!worker.submit(Task::Clear));
+        assert!(matches!(tasks.try_recv().unwrap(), Task::Preview { .. }));
+        assert!(matches!(tasks.try_recv().unwrap(), Task::Clear));
+        assert!(tasks.try_recv().is_err());
+        assert_eq!(worker.finish(), Some(WorkKind::Preview));
+        assert!(worker.is_busy());
+        assert!(worker.foreground_busy());
+        assert_eq!(worker.finish(), Some(WorkKind::Foreground));
+        assert!(!worker.is_busy());
+        assert!(!worker.foreground_busy());
     }
 }

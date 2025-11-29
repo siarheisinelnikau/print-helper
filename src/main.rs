@@ -5,7 +5,7 @@ use print_helper::{
     layout::{Page, Paper, Project},
     settings::{self, Settings},
     updater,
-    worker::{Event, Outcome, Task, Worker},
+    worker::{Event, Outcome, Task, WorkKind, Worker},
 };
 use std::{
     path::PathBuf,
@@ -99,6 +99,7 @@ struct App {
     preview_failed: bool,
     preview: Option<TextureHandle>,
     thumbnails: Vec<(Page, TextureHandle)>,
+    thumbnail_requested: Option<Page>,
     undo: Vec<Project>,
     redo: Vec<Project>,
     dirty: bool,
@@ -125,7 +126,6 @@ impl App {
         wake: print_helper::software::BackgroundWake,
         initial_error: Option<String>,
     ) -> Self {
-        design::apply(ctx);
         let (settings, error) = match settings::load() {
             Ok(s) => (s, initial_error),
             Err(e) => (
@@ -135,6 +135,15 @@ impl App {
                 Some(format!("{e:#}")),
             ),
         };
+        Self::with_settings(ctx, wake, settings, error)
+    }
+    fn with_settings(
+        ctx: &egui::Context,
+        wake: print_helper::software::BackgroundWake,
+        settings: Settings,
+        error: Option<String>,
+    ) -> Self {
+        design::apply(ctx);
         let mut network = Worker::new(wake.clone());
         let startup_check = settings.startup_updates;
         if startup_check {
@@ -155,6 +164,7 @@ impl App {
             preview_failed: false,
             preview: None,
             thumbnails: Vec::new(),
+            thumbnail_requested: None,
             undo: Vec::new(),
             redo: Vec::new(),
             dirty: false,
@@ -186,6 +196,9 @@ impl App {
         )
     }
     fn cache(&mut self, ctx: &egui::Context, page: Page, image: image::RgbImage) {
+        if self.thumbnails.iter().any(|(cached, _)| cached == &page) {
+            return;
+        }
         if self.thumbnails.len() >= 600 {
             drop(self.thumbnails.remove(0));
         }
@@ -197,6 +210,7 @@ impl App {
         self.changed_at = Instant::now();
         self.dirty = true;
         self.preview_failed = false;
+        self.thumbnail_requested = None;
         self.selected = self
             .selected
             .min(self.project.pages.len().saturating_sub(1));
@@ -206,6 +220,22 @@ impl App {
                 .sheet_count(self.project.pages.len())
                 .saturating_sub(1),
         );
+    }
+    fn select_page(&mut self, index: usize) {
+        if index >= self.project.pages.len() {
+            return;
+        }
+        if self.selected != index {
+            self.selected = index;
+            self.thumbnail_requested = None;
+        }
+        let sheet = index / self.project.layout.per_sheet;
+        if self.sheet != sheet {
+            self.sheet = sheet;
+            self.revision += 1;
+            self.preview_failed = false;
+            self.changed_at = Instant::now();
+        }
     }
     fn checkpoint(&mut self, old: Project) {
         if self.undo.len() >= 64 {
@@ -249,15 +279,15 @@ impl App {
             match event {
                 Event::Progress(text, ratio) => self.progress = Some((text, ratio)),
                 Event::Finished(result) => {
-                    self.worker.busy = false;
+                    let kind = self.worker.finish();
                     self.progress = None;
                     match result {
                         Err(e) => {
-                            if self.requested == Some(self.revision)
-                                && self.preview_revision != Some(self.revision)
-                            {
+                            if kind == Some(WorkKind::Preview) {
+                                if self.requested != Some(self.revision) {
+                                    continue;
+                                }
                                 self.preview_failed = true;
-                                self.preview = None;
                             }
                             self.error = Some(e);
                         }
@@ -283,19 +313,14 @@ impl App {
                             self.dirty = false;
                             self.status = "Project opened; source hashes verified".into();
                         }
-                        Ok(Outcome::Preview {
-                            revision,
-                            image,
-                            page,
-                            thumbnail,
-                        }) => {
-                            self.cache(ctx, page, thumbnail);
+                        Ok(Outcome::Preview { revision, image }) => {
                             if revision == self.revision {
                                 self.preview_failed = false;
                                 self.preview = Some(Self::texture(ctx, image, "Output sheet"));
                                 self.preview_revision = Some(revision);
                             }
                         }
+                        Ok(Outcome::Thumbnail { page, image }) => self.cache(ctx, page, image),
                         Ok(Outcome::Message(message)) => {
                             if message.starts_with("Saved ") {
                                 self.dirty = false;
@@ -314,7 +339,7 @@ impl App {
                     self.update_status = format!("{message}: {:.0}%", ratio * 100.0);
                 }
                 Event::Finished(result) => {
-                    self.network.busy = false;
+                    self.network.finish();
                     self.downloading = false;
                     self.update_progress = None;
                     match result {
@@ -359,7 +384,7 @@ impl App {
                         .color(design::ACCENT),
                 );
                 ui.separator();
-                ui.add_enabled_ui(!self.worker.busy, |ui| {
+                ui.add_enabled_ui(!self.worker.foreground_busy(), |ui| {
                     ui.menu_button("File", |ui| {
                         if ui.button("Open layout…").clicked() {
                             self.request_discard(Discard::Open);
@@ -383,14 +408,17 @@ impl App {
                     });
                 });
                 if ui
-                    .add_enabled(!self.worker.busy, egui::Button::new("Add files…"))
+                    .add_enabled(
+                        !self.worker.foreground_busy(),
+                        egui::Button::new("Add files…"),
+                    )
                     .clicked()
                 {
                     self.worker.submit(Task::Import(self.project.pages.len()));
                 }
                 if ui
                     .add_enabled(
-                        !self.undo.is_empty() && !self.worker.busy,
+                        !self.undo.is_empty() && !self.worker.foreground_busy(),
                         egui::Button::new("Undo"),
                     )
                     .clicked()
@@ -401,7 +429,7 @@ impl App {
                 }
                 if ui
                     .add_enabled(
-                        !self.redo.is_empty() && !self.worker.busy,
+                        !self.redo.is_empty() && !self.worker.foreground_busy(),
                         egui::Button::new("Redo"),
                     )
                     .clicked()
@@ -411,7 +439,7 @@ impl App {
                     self.touch();
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let ready = !self.worker.busy && !self.project.pages.is_empty();
+                    let ready = !self.worker.foreground_busy() && !self.project.pages.is_empty();
                     if design::primary(ui, "Export PDF…", ready)
                         .on_disabled_hover_text("Add a document and wait for preparation to finish")
                         .clicked()
@@ -445,7 +473,7 @@ impl App {
                 ui.heading("Pages");
                 design::help(ui, "Select a page to edit it");
                 ui.horizontal(|ui| {
-                    let ready = !self.worker.busy && !self.project.pages.is_empty();
+                    let ready = !self.worker.foreground_busy() && !self.project.pages.is_empty();
                     if ui
                         .add_enabled(ready && self.selected > 0, egui::Button::new("Up"))
                         .clicked()
@@ -521,10 +549,7 @@ impl App {
                                 .response
                                 .interact(egui::Sense::click());
                             if response.clicked() {
-                                self.selected = i;
-                                self.sheet = i / self.project.layout.per_sheet;
-                                self.revision += 1;
-                                self.changed_at = Instant::now();
+                                self.select_page(i);
                             }
                         }
                     },
@@ -536,7 +561,7 @@ impl App {
             if self.installing { ui.disable(); }
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("Print layout");
-                ui.add_enabled_ui(!self.worker.busy, |ui| {
+                ui.add_enabled_ui(!self.worker.foreground_busy(), |ui| {
                     let l = &mut self.project.layout;
                     ui.label("Paper size");
                     egui::ComboBox::from_id_salt("paper").width(230.0).selected_text(format!("{:?}", l.paper)).show_ui(ui, |ui| {
@@ -637,8 +662,12 @@ impl App {
                         "Add documents, arrange the pages and choose a sheet layout.",
                     );
                     ui.add_space(16.0);
-                    if design::primary(ui, "Add files…", !self.worker.busy && !self.installing)
-                        .clicked()
+                    if design::primary(
+                        ui,
+                        "Add files…",
+                        !self.worker.foreground_busy() && !self.installing,
+                    )
+                    .clicked()
                     {
                         self.worker.submit(Task::Import(0));
                     }
@@ -661,10 +690,10 @@ impl App {
                 design::help(ui, format!("Installed version {} · Windows x64", env!("CARGO_PKG_VERSION")));
                 ui.separator();
                 ui.label(RichText::new("Updates").strong());
-                ui.add_enabled_ui(!self.worker.busy && !self.installing, |ui| {
+                ui.add_enabled_ui(!self.worker.foreground_busy() && !self.installing, |ui| {
                     if ui.checkbox(&mut self.settings.startup_updates, "Check for updates on startup").changed() { self.worker.submit(Task::Settings(self.settings.clone())); }
                 });
-                if ui.add_enabled(!self.network.busy, egui::Button::new("Check for updates")).clicked() {
+                if ui.add_enabled(!self.network.is_busy(), egui::Button::new("Check for updates")).clicked() {
                     self.startup_check = false; self.update_status = "Checking…".into(); self.network.submit(Task::CheckUpdate);
                 }
                 ui.label(&self.update_status);
@@ -674,13 +703,13 @@ impl App {
                     ui.label(format!("Available: {}", update.version));
                     ui.small("Save your layout first. Installation closes and restarts PrintHelper. Settings and source documents are preserved.");
                     if self.dirty { design::help(ui, "Save the layout with File → Save layout as… before updating."); }
-                    if self.staged_update.is_none() && design::primary(ui, "Download and install", !self.network.busy && !self.worker.busy && !self.dirty).clicked() {
+                    if self.staged_update.is_none() && design::primary(ui, "Download and install", !self.network.is_busy() && !self.worker.foreground_busy() && !self.dirty).clicked() {
                         self.downloading = self.network.submit(Task::Download(update.clone()));
                         self.update_status = "Starting download…".into();
                     }
                 }
                 if let Some((path, digest)) = &self.staged_update
-                    && ui.add_enabled(!self.dirty && !self.worker.busy && !self.network.busy, egui::Button::new("Install and restart")).clicked() {
+                    && ui.add_enabled(!self.dirty && !self.worker.foreground_busy() && !self.network.is_busy(), egui::Button::new("Install and restart")).clicked() {
                     self.installing = self.network.submit(Task::Install(path.clone(), digest.clone()));
                     self.update_status = "Verifying and preparing restart…".into();
                 }
@@ -763,7 +792,7 @@ impl print_helper::software::DesktopApp for App {
             {
                 self.settings_open = true;
             }
-            if self.worker.busy {
+            if self.worker.foreground_busy() {
                 ui.label("Working...");
                 if ui.button("Cancel").clicked() {
                     self.worker.cancel.store(true, Ordering::Relaxed);
@@ -781,14 +810,13 @@ impl print_helper::software::DesktopApp for App {
         self.dialogs(ctx);
         if !self.project.pages.is_empty()
             && self.requested != Some(self.revision)
-            && !self.worker.busy
+            && !self.worker.is_busy()
         {
             let delay = Duration::from_millis(120).saturating_sub(self.changed_at.elapsed());
             if delay.is_zero() {
                 if self.worker.submit(Task::Preview {
                     project: self.project.clone(),
                     sheet: self.sheet,
-                    selected: self.selected,
                     revision: self.revision,
                 }) {
                     self.preview_failed = false;
@@ -798,5 +826,108 @@ impl print_helper::software::DesktopApp for App {
                 ctx.request_repaint_after(delay);
             }
         }
+        if !self.worker.is_busy()
+            && self.preview_revision == Some(self.revision)
+            && let Some(page) = self.project.pages.get(self.selected)
+            && self.thumbnail_requested.as_ref() != Some(page)
+            && !self.thumbnails.iter().any(|(cached, _)| cached == page)
+            && self.worker.submit(Task::Thumbnail(page.clone()))
+        {
+            self.thumbnail_requested = Some(page.clone());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use print_helper::software::{BackgroundWake, DesktopApp};
+
+    fn fixture(ctx: &egui::Context) -> App {
+        // Inject settings: no real settings read, network, native window or dialog.
+        let mut app = App::with_settings(
+            ctx,
+            BackgroundWake::new(|| {}),
+            Settings {
+                startup_updates: false,
+            },
+            None,
+        );
+        for index in 0..4 {
+            let page = Page {
+                path: PathBuf::from(format!("synthetic-{index}.png")),
+                sha256: "0".repeat(64),
+                source_page: 0,
+                width_pt: 60.0,
+                height_pt: 80.0,
+                crop: [0.0; 4],
+                quarter_turns: 0,
+            };
+            app.project.pages.push(page.clone());
+            app.cache(ctx, page, image::RgbImage::new(6, 8));
+        }
+        app.revision = 7;
+        app.requested = Some(7);
+        app.preview_revision = Some(7);
+        app.preview = Some(App::texture(ctx, image::RgbImage::new(60, 80), "sheet"));
+        app
+    }
+
+    #[test]
+    fn cached_selection_within_a_sheet_does_not_dispatch_work_or_replace_textures() {
+        let ctx = egui::Context::default();
+        let mut app = fixture(&ctx);
+        let sheet_id = app.preview.as_ref().unwrap().id();
+        let thumbnail_ids: Vec<_> = app.thumbnails.iter().map(|(_, t)| t.id()).collect();
+        for index in [0, 0, 1, 1, 0] {
+            app.select_page(index);
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(1220.0, 850.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| app.update(ctx),
+            );
+            assert_eq!(app.revision, 7);
+            assert_eq!(app.requested, Some(7));
+            assert_eq!(app.preview_revision, Some(7));
+            assert_eq!(app.preview.as_ref().unwrap().id(), sheet_id);
+            assert!(!app.worker.is_busy());
+            assert!(!app.network.is_busy());
+            assert!(!app.dirty);
+            assert_eq!(
+                app.thumbnails
+                    .iter()
+                    .map(|(_, t)| t.id())
+                    .collect::<Vec<_>>(),
+                thumbnail_ids
+            );
+        }
+    }
+
+    #[test]
+    fn sheet_navigation_invalidates_once_and_duplicate_thumbnails_keep_their_texture() {
+        let ctx = egui::Context::default();
+        let mut app = fixture(&ctx);
+        let id = app.thumbnails[0].1.id();
+        app.cache(
+            &ctx,
+            app.project.pages[0].clone(),
+            image::RgbImage::new(6, 8),
+        );
+        assert_eq!(app.thumbnails.len(), 4);
+        assert_eq!(app.thumbnails[0].1.id(), id);
+        app.select_page(2);
+        assert_eq!((app.sheet, app.revision), (1, 8));
+        app.select_page(3);
+        app.select_page(3);
+        assert_eq!((app.sheet, app.revision), (1, 8));
+        app.select_page(0);
+        assert_eq!((app.sheet, app.revision), (0, 9));
+        assert_eq!(app.preview_revision, Some(7));
+        assert!(!app.dirty);
     }
 }
