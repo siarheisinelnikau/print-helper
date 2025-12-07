@@ -13,6 +13,7 @@ Prepare multi-page print layouts from PDF and image inputs in an independent Win
 
 ## Fixed during local review
 
+- Avoid recalculating output sheets for repeated clicks or selection within the same sheet. Reuse cached thumbnails and separate missing-thumbnail rendering from sheet rendering. Background renders keep foreground controls/status stable, while one explicit action can queue behind them. Headless regressions cover dispatch and texture reuse; visible flicker still needs native-window validation.
 - Embed the original printer icon in the standalone EXE and use it for the window and taskbar. All nine resolutions are verified in the packaged resources; native appearance remains pending GUI validation.
 - Keep preview loading/retry status in one stable row and bottom progress in a fixed-height panel, preventing state changes from resizing or moving the sheet in headless layout tests. Replace the unsupported arrow glyph with readable page/sheet counts.
 - Open Add files and the other file pickers on an isolated STA thread instead of the PDF worker's MTA, eliminating the confirmed COM-mode conflict that silently cancelled picker startup. Noninteractive apartment regressions cover this fix; actual picker interaction remains pending.
