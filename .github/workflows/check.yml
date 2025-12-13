@@ -23,12 +23,9 @@ jobs:
       - name: Check synthetic fixtures without opening a window or printer
         shell: pwsh
         run: ./scripts/check.ps1
-      - name: Package (no publishing)
+      - name: Package and inspect current version (no publishing)
         shell: pwsh
         run: ./scripts/package.ps1
-      - name: Inspect software executable without starting it
-        shell: pwsh
-        run: python ./scripts/inspect-pe.py ./dist/PrintHelper-v0.1.0.exe
       - uses: actions/upload-artifact@v4
         with:
           name: PrintHelper-windows-x64
