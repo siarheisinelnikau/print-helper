@@ -87,11 +87,18 @@ enum Discard {
     Close,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InspectorTab {
+    Sheet,
+    Page,
+}
+
 struct App {
     project: Project,
     worker: Worker,
     network: Worker,
     selected: usize,
+    inspector: InspectorTab,
     sheet: usize,
     revision: u64,
     requested: Option<u64>,
@@ -157,6 +164,7 @@ impl App {
             worker: Worker::new(wake),
             network,
             selected: 0,
+            inspector: InspectorTab::Sheet,
             sheet: 0,
             revision: 0,
             requested: None,
@@ -169,13 +177,13 @@ impl App {
             redo: Vec::new(),
             dirty: false,
             changed_at: Instant::now(),
-            status: "Add PDF documents or images to begin".into(),
+            status: "Ready".into(),
             error,
             progress: None,
             settings,
             settings_open: false,
             update: None,
-            update_status: "No check completed".into(),
+            update_status: "Not checked yet".into(),
             startup_check,
             staged_update: None,
             installing: false,
@@ -211,6 +219,9 @@ impl App {
         self.dirty = true;
         self.preview_failed = false;
         self.thumbnail_requested = None;
+        if self.project.pages.is_empty() {
+            self.inspector = InspectorTab::Sheet;
+        }
         self.selected = self
             .selected
             .min(self.project.pages.len().saturating_sub(1));
@@ -225,6 +236,7 @@ impl App {
         if index >= self.project.pages.len() {
             return;
         }
+        self.inspector = InspectorTab::Page;
         if self.selected != index {
             self.selected = index;
             self.thumbnail_requested = None;
@@ -235,6 +247,30 @@ impl App {
             self.revision += 1;
             self.preview_failed = false;
             self.changed_at = Instant::now();
+        }
+    }
+    fn move_selected(&mut self, offset: isize) {
+        let Some(target) = self
+            .selected
+            .checked_add_signed(offset)
+            .filter(|&index| index < self.project.pages.len())
+        else {
+            return;
+        };
+        self.project.pages.swap(self.selected, target);
+        self.selected = target;
+        self.sheet = target / self.project.layout.per_sheet;
+    }
+    fn remove_selected(&mut self) {
+        if self.selected < self.project.pages.len() {
+            self.project.pages.remove(self.selected);
+            self.selected = self
+                .selected
+                .min(self.project.pages.len().saturating_sub(1));
+            self.sheet = self.selected / self.project.layout.per_sheet;
+            if self.project.pages.is_empty() {
+                self.inspector = InspectorTab::Sheet;
+            }
         }
     }
     fn checkpoint(&mut self, old: Project) {
@@ -372,7 +408,9 @@ impl App {
         }
     }
     fn toolbar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+        egui::TopBottomPanel::top("toolbar")
+            .frame(egui::Frame::new().fill(design::SURFACE).inner_margin(egui::Margin::symmetric(16, 8)))
+            .exact_height(56.0).show(ctx, |ui| {
             if self.installing {
                 ui.disable();
             }
@@ -381,17 +419,17 @@ impl App {
                     RichText::new("PrintHelper")
                         .size(22.0)
                         .strong()
-                        .color(design::ACCENT),
+                        .color(design::INK),
                 );
                 ui.separator();
                 ui.add_enabled_ui(!self.worker.foreground_busy(), |ui| {
                     ui.menu_button("File", |ui| {
-                        if ui.button("Open layout…").clicked() {
+                        if ui.button("Open layout...").clicked() {
                             self.request_discard(Discard::Open);
                             ui.close();
                         }
                         if ui
-                            .button("Save layout as…")
+                            .button("Save layout as...")
                             .on_hover_text(
                                 "Creates a new layout recipe; source documents are unchanged",
                             )
@@ -407,15 +445,6 @@ impl App {
                         }
                     });
                 });
-                if ui
-                    .add_enabled(
-                        !self.worker.foreground_busy(),
-                        egui::Button::new("Add files…"),
-                    )
-                    .clicked()
-                {
-                    self.worker.submit(Task::Import(self.project.pages.len()));
-                }
                 if ui
                     .add_enabled(
                         !self.undo.is_empty() && !self.worker.foreground_busy(),
@@ -440,15 +469,16 @@ impl App {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let ready = !self.worker.foreground_busy() && !self.project.pages.is_empty();
-                    if design::primary(ui, "Export PDF…", ready)
+                    if design::primary(ui, "Save PDF...", ready)
                         .on_disabled_hover_text("Add a document and wait for preparation to finish")
+                        .on_hover_text("Save a new PDF. Pages become images; text will not be selectable. Your source files stay unchanged.")
                         .clicked()
                     {
                         self.error = None;
                         self.worker.submit(Task::Export(self.project.clone()));
                     }
                     if ui
-                        .add_enabled(ready, egui::Button::new("Print…"))
+                        .add_enabled(ready, egui::Button::new("Print..."))
                         .on_hover_text(
                             "Choose a printer and match the preview's paper size and orientation",
                         )
@@ -466,90 +496,71 @@ impl App {
     fn pages_panel(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("pages")
             .exact_width(216.0)
+            .frame(egui::Frame::new().fill(design::PANEL).inner_margin(12))
             .show(ctx, |ui| {
                 if self.installing {
                     ui.disable();
                 }
-                ui.heading("Pages");
-                design::help(ui, "Select a page to edit it");
                 ui.horizontal(|ui| {
-                    let ready = !self.worker.foreground_busy() && !self.project.pages.is_empty();
+                    ui.heading("Pages");
+                    design::help(ui, self.project.pages.len().to_string());
+                });
+                ui.add_space(4.0);
+                if self.project.pages.is_empty() {
+                    design::help(ui, "Your pages will appear here.");
+                    return;
+                }
+                if ui
+                    .add_enabled(
+                        !self.worker.foreground_busy(),
+                        egui::Button::new("Add files...")
+                            .min_size(Vec2::new(ui.available_width(), 36.0)),
+                    )
+                    .on_hover_text("Add PDFs or images to this layout")
+                    .clicked()
+                {
+                    self.worker.submit(Task::Import(self.project.pages.len()));
+                }
+                ui.horizontal(|ui| {
+                    let ready = !self.worker.foreground_busy();
+                    let width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
                     if ui
-                        .add_enabled(ready && self.selected > 0, egui::Button::new("Up"))
+                        .add_enabled(
+                            ready && self.selected > 0,
+                            egui::Button::new("Move up").min_size(Vec2::new(width, 34.0)),
+                        )
                         .clicked()
                     {
-                        self.project.pages.swap(self.selected, self.selected - 1);
-                        self.selected -= 1;
+                        self.move_selected(-1);
                     }
                     if ui
                         .add_enabled(
                             ready && self.selected + 1 < self.project.pages.len(),
-                            egui::Button::new("Down"),
+                            egui::Button::new("Move down").min_size(Vec2::new(width, 34.0)),
                         )
                         .clicked()
                     {
-                        self.project.pages.swap(self.selected, self.selected + 1);
-                        self.selected += 1;
-                    }
-                    if ui.add_enabled(ready, egui::Button::new(RichText::new("Remove").color(design::ERROR)))
-                        .on_hover_text("Remove from this layout. Undo is available; the source document is unchanged").clicked() {
-                        self.project.pages.remove(self.selected);
-                        self.selected = self
-                            .selected
-                            .min(self.project.pages.len().saturating_sub(1));
+                        self.move_selected(1);
                     }
                 });
+                ui.add_space(4.0);
                 egui::ScrollArea::vertical().id_salt("page-list").show_rows(
                     ui,
-                    196.0,
+                    design::PAGE_ROW_HEIGHT,
                     self.project.pages.len(),
                     |ui, rows| {
-                        for i in rows {
-                            let page = &self.project.pages[i];
-                            let selected = i == self.selected;
-                            let fill = if selected {
-                                design::SELECTED
-                            } else {
-                                design::SURFACE
-                            };
-                            let response = egui::Frame::new()
-                                .fill(fill)
-                                .stroke(egui::Stroke::new(1.0, if selected { design::ACCENT } else { design::BORDER }))
-                                .inner_margin(8.0)
-                                .show(ui, |ui| {
-                                    ui.set_min_size(Vec2::new(168.0, 180.0));
-                                    if let Some((_, texture)) =
-                                        self.thumbnails.iter().rev().find(|(p, _)| p == page)
-                                    {
-                                        ui.add(
-                                            egui::Image::new(texture)
-                                                .fit_to_exact_size(Vec2::new(110.0, 112.0))
-                                                .maintain_aspect_ratio(true),
-                                        );
-                                    } else {
-                                        design::help(ui, "Select to refresh thumbnail");
-                                        ui.add_space(82.0);
-                                    }
-                                    ui.label(format!(
-                                        "{} · source page {}",
-                                        i + 1,
-                                        page.source_page + 1
-                                    ));
-                                    ui.add(
-                                        egui::Label::new(
-                                            page.path
-                                                .file_name()
-                                                .unwrap_or_default()
-                                                .to_string_lossy(),
-                                        )
-                                        .truncate(),
-                                    )
-                                    .on_hover_text(page.path.display().to_string());
-                                })
-                                .response
-                                .interact(egui::Sense::click());
-                            if response.clicked() {
-                                self.select_page(i);
+                        for index in rows {
+                            let page = &self.project.pages[index];
+                            let texture = self
+                                .thumbnails
+                                .iter()
+                                .rev()
+                                .find(|(p, _)| p == page)
+                                .map(|(_, t)| t);
+                            if design::page_card(ui, index, page, index == self.selected, texture)
+                                .clicked()
+                            {
+                                self.select_page(index);
                             }
                         }
                     },
@@ -557,193 +568,369 @@ impl App {
             });
     }
     fn layout_panel(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::right("layout").exact_width(272.0).show(ctx, |ui| {
-            if self.installing { ui.disable(); }
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.heading("Print layout");
-                ui.add_enabled_ui(!self.worker.foreground_busy(), |ui| {
-                    let l = &mut self.project.layout;
-                    ui.label("Paper size");
-                    egui::ComboBox::from_id_salt("paper").width(230.0).selected_text(format!("{:?}", l.paper)).show_ui(ui, |ui| {
-                        for p in [Paper::A4, Paper::Letter, Paper::A5] { ui.selectable_value(&mut l.paper, p, format!("{p:?}")); }
+        egui::SidePanel::right("layout")
+            .exact_width(288.0)
+            .frame(egui::Frame::new().fill(design::SURFACE).inner_margin(16))
+            .show(ctx, |ui| {
+                if self.installing {
+                    ui.disable();
+                }
+                ui.horizontal(|ui| {
+                    let width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+                    if design::choice(ui, "Sheet", self.inspector == InspectorTab::Sheet, width)
+                        .clicked()
+                    {
+                        self.inspector = InspectorTab::Sheet;
+                    }
+                    ui.add_enabled_ui(!self.project.pages.is_empty(), |ui| {
+                        if design::choice(ui, "Page", self.inspector == InspectorTab::Page, width)
+                            .clicked()
+                        {
+                            self.inspector = InspectorTab::Page;
+                        }
                     });
-                    ui.horizontal(|ui| {
-                        ui.selectable_value(&mut l.landscape, false, "Portrait");
-                        ui.selectable_value(&mut l.landscape, true, "Landscape");
-                    });
-                    ui.label("Pages per sheet");
-                    ui.horizontal(|ui| { for (n, text) in [(1, "1 page"), (2, "2 pages"), (4, "4 pages")] { ui.selectable_value(&mut l.per_sheet, n, text); } });
-                    egui::Grid::new("sheet-dimensions").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
-                        ui.label("Margins"); ui.add(egui::DragValue::new(&mut l.margin_mm).range(0.0..=50.0).speed(0.5).suffix(" mm")); ui.end_row();
-                        if l.per_sheet > 1 { ui.label("Page gap"); ui.add(egui::DragValue::new(&mut l.gap_mm).range(0.0..=20.0).speed(0.5).suffix(" mm")); ui.end_row(); }
-                    });
-                    ui.checkbox(&mut l.grayscale, "Grayscale").on_hover_text("Convert colors to shades of gray");
-                    ui.label("Export and print quality");
-                    egui::ComboBox::from_id_salt("output-quality").width(230.0)
-                        .selected_text(if l.dpi == 150 { "150 DPI · standard" } else { "300 DPI · fine text" }).show_ui(ui, |ui| {
-                        ui.selectable_value(&mut l.dpi, 150, "150 DPI · standard");
-                        ui.selectable_value(&mut l.dpi, 300, "300 DPI · fine text");
-                    });
-                    ui.separator();
-                    ui.label(RichText::new("Selected page").strong());
-                    if let Some(page) = self.project.pages.get_mut(self.selected) {
-                        design::help(ui, format!("Page {} · {}° rotation", self.selected + 1, page.quarter_turns as u16 * 90));
-                        if ui.button("Rotate clockwise").clicked() { page.quarter_turns = (page.quarter_turns + 1) % 4; }
-                        let mut apply_crop = None;
-                        egui::CollapsingHeader::new("Crop margins").show(ui, |ui| {
-                            design::help(ui, "Remove a percentage of each original edge");
-                            egui::Grid::new("crop-edges").num_columns(2).show(ui, |ui| {
-                                for (i, label) in ["Left", "Top", "Right", "Bottom"].iter().enumerate() {
-                                    let mut value = page.crop[i] * 100.0; ui.label(*label);
-                                    if ui.add(egui::DragValue::new(&mut value).range(0.0..=45.0).speed(0.5).suffix("%" )).changed() { page.crop[i] = value / 100.0; } ui.end_row();
-                                }
-                            });
-                            if ui.button("Apply crop to all pages").clicked() { apply_crop = Some(page.crop); }
+                });
+                ui.add_space(12.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("inspector")
+                    .show(ui, |ui| {
+                        ui.add_enabled_ui(!self.worker.foreground_busy(), |ui| {
+                            match self.inspector {
+                                InspectorTab::Sheet => self.sheet_controls(ui),
+                                InspectorTab::Page => self.page_controls(ui),
+                            }
                         });
-                        if ui.button("Reset this page").clicked() { page.crop = [0.0; 4]; page.quarter_turns = 0; }
-                        if let Some(crop) = apply_crop { for page in &mut self.project.pages { page.crop = crop; } }
-                    } else { design::help(ui, "Add files, then select a page"); }
-                });
-                ui.separator();
-                design::help(ui, "PDF export is rasterized.").on_hover_text("Text, links, forms and original vectors are not retained. Preview is lower resolution; export uses the quality selected above.");
-                ui.collapsing("Before printing", |ui| {
-                    ui.label("In printer Properties, match the paper size and orientation shown here. Use 100% scale and one driver page per sheet.");
-                });
+                    });
             });
+    }
+    fn sheet_controls(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Sheet layout");
+        let layout = &mut self.project.layout;
+        design::section_label(ui, "Paper size");
+        egui::ComboBox::from_id_salt("paper")
+            .width(ui.available_width())
+            .selected_text(match layout.paper {
+                Paper::A4 => "A4 - 210 x 297 mm",
+                Paper::A5 => "A5 - 148 x 210 mm",
+                Paper::Letter => "Letter - 8.5 x 11 in",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut layout.paper, Paper::A4, "A4 - 210 x 297 mm");
+                ui.selectable_value(&mut layout.paper, Paper::A5, "A5 - 148 x 210 mm");
+                ui.selectable_value(&mut layout.paper, Paper::Letter, "Letter - 8.5 x 11 in");
+            });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+            if design::choice(ui, "Portrait", !layout.landscape, width).clicked() {
+                layout.landscape = false;
+            }
+            if design::choice(ui, "Landscape", layout.landscape, width).clicked() {
+                layout.landscape = true;
+            }
         });
+        design::section_label(ui, "Pages per sheet");
+        ui.horizontal(|ui| {
+            let width = (ui.available_width() - 2.0 * ui.spacing().item_spacing.x) / 3.0;
+            for (count, label) in [(1, "1 page"), (2, "2 pages"), (4, "4 pages")] {
+                if design::choice(ui, label, layout.per_sheet == count, width).clicked() {
+                    layout.per_sheet = count;
+                }
+            }
+        });
+        design::section_label(ui, "Color mode");
+        ui.horizontal(|ui| {
+            let width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+            if design::choice(ui, "Color", !layout.grayscale, width).clicked() {
+                layout.grayscale = false;
+            }
+            if design::choice(ui, "Grayscale", layout.grayscale, width)
+                .on_hover_text("Convert colors to shades of gray")
+                .clicked()
+            {
+                layout.grayscale = true;
+            }
+        });
+        ui.add_space(16.0);
+        egui::CollapsingHeader::new("Margins and spacing").show(ui, |ui| {
+            egui::Grid::new("sheet-dimensions")
+                .num_columns(2)
+                .spacing([16.0, 8.0])
+                .show(ui, |ui| {
+                    ui.label("Outer margins");
+                    ui.add(
+                        egui::DragValue::new(&mut layout.margin_mm)
+                            .range(0.0..=50.0)
+                            .speed(0.5)
+                            .suffix(" mm"),
+                    );
+                    ui.end_row();
+                    if layout.per_sheet > 1 {
+                        ui.label("Between pages");
+                        ui.add(
+                            egui::DragValue::new(&mut layout.gap_mm)
+                                .range(0.0..=20.0)
+                                .speed(0.5)
+                                .suffix(" mm"),
+                        );
+                        ui.end_row();
+                    }
+                });
+        });
+        egui::CollapsingHeader::new("Output quality").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+                if design::choice(ui, "Standard", layout.dpi == 150, width).clicked() {
+                    layout.dpi = 150;
+                }
+                if design::choice(ui, "High", layout.dpi == 300, width).clicked() {
+                    layout.dpi = 300;
+                }
+            });
+            design::help(
+                ui,
+                if layout.dpi == 150 {
+                    "150 DPI. Smaller PDF files."
+                } else {
+                    "300 DPI. Sharper small text."
+                },
+            );
+        });
+        ui.add_space(12.0);
+        design::help(ui, "PDFs are saved as images.").on_hover_text(
+            "Text in the saved PDF will not be selectable. Your source files stay unchanged.",
+        );
+    }
+    fn page_controls(&mut self, ui: &mut egui::Ui) {
+        let Some(page) = self.project.pages.get_mut(self.selected) else {
+            design::help(ui, "Choose a page from the list.");
+            return;
+        };
+        ui.heading(format!("Page {}", self.selected + 1));
+        ui.add(
+            egui::Label::new(
+                RichText::new(page.path.file_name().unwrap_or_default().to_string_lossy())
+                    .color(design::SECONDARY),
+            )
+            .truncate(),
+        )
+        .on_hover_text(page.path.display().to_string());
+        design::section_label(ui, "Rotate");
+        ui.horizontal(|ui| {
+            let width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+            if ui
+                .add_sized([width, 36.0], egui::Button::new("Rotate left"))
+                .clicked()
+            {
+                page.quarter_turns = (page.quarter_turns + 3) % 4;
+            }
+            if ui
+                .add_sized([width, 36.0], egui::Button::new("Rotate right"))
+                .clicked()
+            {
+                page.quarter_turns = (page.quarter_turns + 1) % 4;
+            }
+        });
+        design::help(
+            ui,
+            format!("Rotation: {} degrees", page.quarter_turns as u16 * 90),
+        );
+        ui.add_space(16.0);
+        let mut apply_crop = None;
+        egui::CollapsingHeader::new("Crop edges").show(ui, |ui| {
+            design::help(ui, "Trim a percentage from each edge.");
+            egui::Grid::new("crop-edges").num_columns(2).show(ui, |ui| {
+                for (index, label) in ["Left", "Top", "Right", "Bottom"].iter().enumerate() {
+                    let mut value = page.crop[index] * 100.0;
+                    ui.label(*label);
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut value)
+                                .range(0.0..=45.0)
+                                .speed(0.5)
+                                .suffix("%"),
+                        )
+                        .changed()
+                    {
+                        page.crop[index] = value / 100.0;
+                    }
+                    ui.end_row();
+                }
+            });
+            if ui
+                .button("Apply crop to all pages")
+                .on_hover_text("Copies these crop values. Undo is available.")
+                .clicked()
+            {
+                apply_crop = Some(page.crop);
+            }
+        });
+        ui.add_space(12.0);
+        let changed = page.quarter_turns != 0 || page.crop != [0.0; 4];
+        if ui
+            .add_enabled(changed, egui::Button::new("Reset page edits"))
+            .clicked()
+        {
+            page.crop = [0.0; 4];
+            page.quarter_turns = 0;
+        }
+        if let Some(crop) = apply_crop {
+            for page in &mut self.project.pages {
+                page.crop = crop;
+            }
+        }
+        ui.add_space(20.0);
+        ui.separator();
+        if ui
+            .add(
+                egui::Button::new(RichText::new("Remove page").color(design::ERROR))
+                    .min_size(Vec2::new(ui.available_width(), 36.0)),
+            )
+            .on_hover_text(
+                "Remove from this layout. Undo restores the page; the source file stays unchanged.",
+            )
+            .clicked()
+        {
+            self.remove_selected();
+        }
     }
     fn preview_panel(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(design::CANVAS).inner_margin(16.0))
             .show(ctx, |ui| {
                 let count = self.project.layout.sheet_count(self.project.pages.len());
-                ui.horizontal(|ui| {
-                    ui.heading("Output preview");
-                    if ui
-                        .add_enabled(self.sheet > 0, egui::Button::new("Previous"))
-                        .clicked()
-                    {
-                        self.sheet -= 1;
-                        self.revision += 1;
-                        self.changed_at = Instant::now();
-                    }
-                    ui.label(format!(
-                        "Sheet {} of {}",
-                        if count == 0 { 0 } else { self.sheet + 1 },
-                        count
-                    ));
-                    if ui
-                        .add_enabled(self.sheet + 1 < count, egui::Button::new("Next"))
-                        .clicked()
-                    {
-                        self.sheet += 1;
-                        self.revision += 1;
-                        self.changed_at = Instant::now();
-                    }
-                });
-                let n = self.project.pages.len();
-                let state = if count == 0 {
-                    design::PreviewState::Empty
-                } else if self.preview_failed {
+                if count == 0 {
+                    ui.add_space((ui.available_height() * 0.22).max(16.0));
+                    ui.vertical_centered(|ui| {
+                        ui.heading("Start with a PDF or image");
+                        ui.add_space(8.0);
+                        ui.add(egui::Label::new(RichText::new("Arrange your pages, choose a sheet layout,\nthen save a PDF or print.").color(design::SECONDARY)).wrap());
+                        ui.add_space(20.0);
+                        if design::primary(ui, "Add files...", !self.worker.foreground_busy() && !self.installing).clicked() {
+                            self.worker.submit(Task::Import(0));
+                        }
+                        ui.add_space(12.0);
+                        design::help(ui, RichText::new("PDF, PNG, JPEG, BMP, TIFF and WebP").small());
+                        design::help(ui, RichText::new("Your source files stay unchanged.").small());
+                    });
+                    return;
+                }
+                ui.heading("Preview");
+                let state = if self.preview_failed {
                     design::PreviewState::Failed
                 } else if self.preview_revision != Some(self.revision) {
                     design::PreviewState::Updating
                 } else {
                     design::PreviewState::Ready
                 };
-                if design::preview_status(ui, n, count, state) {
-                    self.requested = None;
-                }
-                if count == 0 {
-                    ui.add_space(80.0);
-                    ui.heading("Prepare your next print");
-                    design::help(
-                        ui,
-                        "Add documents, arrange the pages and choose a sheet layout.",
-                    );
-                    ui.add_space(16.0);
-                    if design::primary(
-                        ui,
-                        "Add files…",
-                        !self.worker.foreground_busy() && !self.installing,
-                    )
-                    .clicked()
-                    {
-                        self.worker.submit(Task::Import(0));
+                if design::preview_status(ui, self.project.pages.len(), count, state) { self.requested = None; }
+                design::sheet_stage(ui, self.preview.as_ref(), if self.preview_failed {
+                    "Preview unavailable. Try again above."
+                } else { "Preparing your preview..." });
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Center), |ui| {
+                    if ui.add_enabled(self.sheet > 0, egui::Button::new("Previous")).clicked() {
+                        self.sheet -= 1; self.revision += 1;
+                        self.preview_failed = false; self.changed_at = Instant::now();
                     }
-                    ui.add_space(8.0);
-                    design::help(ui, "PDF · PNG · JPEG · BMP · TIFF · WebP");
-                } else if let Some(texture) = &self.preview {
-                    ui.add(
-                        egui::Image::new(texture)
-                            .max_size(ui.available_size())
-                            .maintain_aspect_ratio(true),
-                    );
-                }
+                    ui.label(format!("Sheet {} of {}", self.sheet + 1, count));
+                    if ui.add_enabled(self.sheet + 1 < count, egui::Button::new("Next")).clicked() {
+                        self.sheet += 1; self.revision += 1;
+                        self.preview_failed = false; self.changed_at = Instant::now();
+                    }
+                });
             });
     }
     fn dialogs(&mut self, ctx: &egui::Context) {
         if self.settings_open {
             let mut open = true;
-            egui::Window::new("Settings").open(&mut open).default_width(440.0).resizable(false).show(ctx, |ui| {
-                ui.heading("PrintHelper");
-                design::help(ui, format!("Installed version {} · Windows x64", env!("CARGO_PKG_VERSION")));
-                ui.separator();
-                ui.label(RichText::new("Updates").strong());
-                ui.add_enabled_ui(!self.worker.foreground_busy() && !self.installing, |ui| {
-                    if ui.checkbox(&mut self.settings.startup_updates, "Check for updates on startup").changed() { self.worker.submit(Task::Settings(self.settings.clone())); }
-                });
-                if ui.add_enabled(!self.network.is_busy(), egui::Button::new("Check for updates")).clicked() {
-                    self.startup_check = false; self.update_status = "Checking…".into(); self.network.submit(Task::CheckUpdate);
-                }
-                ui.label(&self.update_status);
-                if let Some(ratio) = self.update_progress { ui.add(egui::ProgressBar::new(ratio).show_percentage()); }
-                ui.hyperlink_to("Project and releases", updater::REPOSITORY);
-                if let Some(update) = &self.update {
-                    ui.label(format!("Available: {}", update.version));
-                    ui.small("Save your layout first. Installation closes and restarts PrintHelper. Settings and source documents are preserved.");
-                    if self.dirty { design::help(ui, "Save the layout with File → Save layout as… before updating."); }
-                    if self.staged_update.is_none() && design::primary(ui, "Download and install", !self.network.is_busy() && !self.worker.foreground_busy() && !self.dirty).clicked() {
-                        self.downloading = self.network.submit(Task::Download(update.clone()));
-                        self.update_status = "Starting download…".into();
+            egui::Window::new("Settings").open(&mut open)
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                .default_width(440.0).max_height((ctx.content_rect().height() - 64.0).max(240.0))
+                .resizable(false).collapsible(false).vscroll(true).show(ctx, |ui| {
+                    ui.heading("Updates");
+                    design::help(ui, format!("PrintHelper {} for Windows x64", env!("CARGO_PKG_VERSION")));
+                    ui.add_space(12.0);
+                    ui.add_enabled_ui(!self.worker.foreground_busy() && !self.installing, |ui| {
+                        if ui.checkbox(&mut self.settings.startup_updates, "Check for updates on startup").changed() {
+                            self.worker.submit(Task::Settings(self.settings.clone()));
+                        }
+                    });
+                    if ui.add_enabled(!self.network.is_busy(), egui::Button::new("Check for updates")).clicked() {
+                        self.startup_check = false;
+                        self.update_status = "Checking...".into();
+                        self.network.submit(Task::CheckUpdate);
                     }
-                }
-                if let Some((path, digest)) = &self.staged_update
-                    && ui.add_enabled(!self.dirty && !self.worker.foreground_busy() && !self.network.is_busy(), egui::Button::new("Install and restart")).clicked() {
-                    self.installing = self.network.submit(Task::Install(path.clone(), digest.clone()));
-                    self.update_status = "Verifying and preparing restart…".into();
-                }
-                if self.downloading && ui.button("Cancel download").clicked() { self.network.cancel.store(true, Ordering::Relaxed); }
-                ui.separator();
-                ui.collapsing("Supported documents and output", |ui| {
-                    ui.label("PDF, PNG, JPEG, BMP, TIFF and WebP. Image inputs use 96 DPI; multi-frame images import the first frame only.");
-                    ui.label("Export is a raster PDF at the selected quality. Text search, links, forms and original vectors are not retained. Booklet and automatic duplex are not included.");
+                    design::help(ui, &self.update_status);
+                    if let Some(ratio) = self.update_progress {
+                        ui.add(egui::ProgressBar::new(ratio).show_percentage());
+                    }
+                    if let Some(update) = &self.update {
+                        ui.add_space(12.0);
+                        ui.label(RichText::new(format!("Version {} is available", update.version)).strong());
+                        design::help(ui, "Installing closes and restarts PrintHelper. Your settings and source files are kept.");
+                        if self.dirty { design::help(ui, "Save your layout before updating: File > Save layout as..."); }
+                        if self.staged_update.is_none() && design::primary(ui, "Download and install",
+                            !self.network.is_busy() && !self.worker.foreground_busy() && !self.dirty).clicked() {
+                            self.downloading = self.network.submit(Task::Download(update.clone()));
+                            self.update_status = "Starting download...".into();
+                        }
+                    }
+                    if let Some((path, digest)) = &self.staged_update
+                        && design::primary(ui, "Install and restart",
+                            !self.dirty && !self.worker.foreground_busy() && !self.network.is_busy()).clicked() {
+                        self.installing = self.network.submit(Task::Install(path.clone(), digest.clone()));
+                        self.update_status = "Preparing to restart...".into();
+                    }
+                    if self.downloading && ui.button("Cancel download").clicked() {
+                        self.network.cancel.store(true, Ordering::Relaxed);
+                    }
+                    ui.add_space(16.0);
+                    ui.separator();
+                    ui.collapsing("Supported files", |ui| {
+                        ui.label("PDF, PNG, JPEG, BMP, TIFF and WebP. Multi-frame images use the first frame.");
+                        ui.label("Saved PDFs contain page images. Text will not be selectable or searchable.");
+                    });
+                    ui.collapsing("Printing tips", |ui| {
+                        ui.label("Match the printer's paper size and orientation to your sheet layout.");
+                        ui.label("In the printer's own settings, use 100% scale and one page per sheet.");
+                    });
+                    ui.hyperlink_to("PrintHelper project and releases", updater::REPOSITORY);
                 });
-            });
             self.settings_open = open;
         }
         if let Some(message) = self.error.clone() {
-            egui::Window::new("Action could not be completed")
+            egui::Window::new("Could not finish this action")
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+                .default_width(440.0)
+                .resizable(false)
                 .collapsible(false)
                 .show(ctx, |ui| {
-                    ui.set_max_width(560.0);
-                    ui.label(message);
-                    if ui.button("Dismiss").clicked() {
+                    egui::ScrollArea::vertical()
+                        .max_height(240.0)
+                        .show(ui, |ui| {
+                            ui.label(message);
+                        });
+                    ui.add_space(8.0);
+                    if design::primary(ui, "Close", true).clicked() {
                         self.error = None;
                     }
                 });
         }
         if let Some(action) = self.discard {
             egui::Window::new("Unsaved layout")
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
                 .collapsible(false)
                 .resizable(false)
                 .show(ctx, |ui| {
                     ui.label("Discard unsaved layout changes? Source documents are unchanged.");
                     ui.horizontal(|ui| {
-                        if ui.button("Keep editing").clicked() {
+                        if design::primary(ui, "Keep editing", true).clicked() {
                             self.discard = None;
                         }
-                        if ui.button("Discard changes").clicked() {
+                        if ui
+                            .button(RichText::new("Discard changes").color(design::ERROR))
+                            .clicked()
+                        {
                             self.discard = None;
                             if matches!(action, Discard::Close) {
                                 self.dirty = false;
@@ -782,7 +969,10 @@ impl print_helper::software::DesktopApp for App {
                 ui.add_sized([160.0, 20.0], egui::ProgressBar::new(*ratio).text(text));
             }
             if self.dirty {
-                ui.label(RichText::new("Unsaved layout").strong());
+                ui.label(RichText::new("Layout not saved").strong())
+                    .on_hover_text(
+                        "Save the arrangement with File > Save layout as. Saved PDFs are separate.",
+                    );
                 ui.separator();
             }
             if let Some(update) = &self.update
@@ -929,5 +1119,90 @@ mod tests {
         assert_eq!((app.sheet, app.revision), (0, 9));
         assert_eq!(app.preview_revision, Some(7));
         assert!(!app.dirty);
+    }
+
+    #[test]
+    fn document_and_page_views_fit_minimum_window_without_dispatching_work() {
+        for (width, height) in [(960.0, 640.0), (1220.0, 850.0)] {
+            for scale in [1.0, 1.5, 2.0] {
+                for state in 0..6 {
+                    let ctx = egui::Context::default();
+                    let mut app = if state == 0 {
+                        App::with_settings(
+                            &ctx,
+                            BackgroundWake::new(|| {}),
+                            Settings {
+                                startup_updates: false,
+                            },
+                            None,
+                        )
+                    } else {
+                        fixture(&ctx)
+                    };
+                    if state == 2 {
+                        app.select_page(1);
+                    }
+                    if state == 3 {
+                        app.settings_open = true;
+                    }
+                    if state == 4 {
+                        app.error = Some(
+                            "A generated error message with a long document path. ".repeat(40),
+                        );
+                    }
+                    if state == 5 {
+                        app.discard = Some(Discard::Close);
+                        app.dirty = true;
+                    }
+                    for _ in 0..3 {
+                        let _ = ctx.run(
+                            egui::RawInput {
+                                screen_rect: Some(egui::Rect::from_min_size(
+                                    egui::Pos2::ZERO,
+                                    Vec2::new(width, height),
+                                )),
+                                viewports: [(
+                                    egui::ViewportId::ROOT,
+                                    egui::ViewportInfo {
+                                        native_pixels_per_point: Some(scale),
+                                        ..Default::default()
+                                    },
+                                )]
+                                .into_iter()
+                                .collect(),
+                                ..Default::default()
+                            },
+                            |ctx| app.update(ctx),
+                        );
+                    }
+                    let used = ctx.used_rect();
+                    assert!(
+                        used.max.x <= width + 1.0 && used.max.y <= height + 1.0,
+                        "UI exceeds {width}x{height} at {scale} scale in state {state}: {used:?}"
+                    );
+                    assert!(!app.worker.is_busy());
+                    assert!(!app.network.is_busy());
+                    assert_eq!(app.dirty, state == 5);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn page_actions_follow_selection_and_last_removal_returns_to_sheet_setup() {
+        let ctx = egui::Context::default();
+        let mut app = fixture(&ctx);
+        app.select_page(2);
+        assert!(matches!(app.inspector, InspectorTab::Page));
+        let source = app.project.pages[2].clone();
+        app.move_selected(-1);
+        assert_eq!(app.selected, 1);
+        assert_eq!(app.sheet, 0);
+        assert_eq!(app.project.pages[1], source);
+        while !app.project.pages.is_empty() {
+            app.remove_selected();
+        }
+        assert!(matches!(app.inspector, InspectorTab::Sheet));
+        assert_eq!((app.selected, app.sheet), (0, 0));
     }
 }
