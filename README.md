@@ -2,12 +2,12 @@
 
 Prepare clear, economical print layouts from PDFs and images. PrintHelper is an independent Windows desktop application written in Rust, with its own interface and implementation. It is not affiliated with FinePrint.
 
-Version **0.1.1**, local verification build. The planned [canonical repository](https://github.com/siarheisinelnikau/print-helper) and release have not been published by this development session.
+Version **0.1.2**, local verification build. The planned [canonical repository](https://github.com/siarheisinelnikau/print-helper) and release have not been published by this development session.
 
 ## What works in the implementation
 
 - Import PDF, PNG, JPEG, BMP, TIFF and WebP files into one page list, with page thumbnails.
-- Reorder, delete, rotate clockwise, crop each original edge by percentage, and apply one crop to every page. Undo and redo retain 64 editing steps.
+- Reorder, delete, rotate left or right, crop each original edge by percentage, and apply one crop to every page. Undo and redo retain 64 editing steps.
 - Place 1, 2 or 4 pages on A4, A5 or Letter paper, with portrait/landscape, margins, gaps and grayscale.
 - Preview each output sheet using the same geometry and rendering path as export and printing.
 - Export a new PDF at 150 or 300 DPI. Existing output files and source files are never overwritten.
@@ -19,14 +19,14 @@ Version **0.1.1**, local verification build. The planned [canonical repository](
 
 Windows 10/11 x64 is the supported target. PDF rendering uses the Windows PDF API already provided by the OS; no PDF DLL, virtual printer, driver or service is installed. The MSVC runtime is linked statically. The egui interface is rasterized on the CPU by `egui_software_backend`, then presented as a bitmap through softbuffer's Windows GDI backend. The application has no OpenGL or GPU UI backend. Windows desktop composition remains an OS responsibility. Native window behavior and actual idle/hidden load remain unverified because the GUI was not launched.
 
-1. Run `dist/PrintHelper-v0.1.1.exe` from a writable folder.
-2. Choose **Add files…**. Click a page thumbnail, then use Up/Down/Remove and the Selected page controls. Expand **Crop margins** when needed.
-3. Choose paper, orientation, pages per sheet, margins, gap, grayscale and output DPI. Two-up uses top/bottom cells in portrait and left/right cells in landscape. Four-up reads left to right, then top to bottom.
-4. Inspect every output sheet with Previous/Next. Blank cells on a final partial sheet remain white.
-5. Choose **File → Save layout as…** to preserve a recipe, or **Export PDF…** to create a new document. Choose a new filename for every save/export; replacement is intentionally refused even if a file dialog offers overwrite confirmation. Recipes reference the source files and do not embed them; keep those files at their original locations.
-6. To print, choose **Print…**, then set matching paper/orientation in printer Properties. Use 100% scale and one driver page per sheet to avoid applying N-up twice. The app rejects paper mismatches and margins smaller than the driver's printable area before starting a print job. Driver copies/collation are delegated to Windows. A successful spool operation does not confirm physical output.
+1. Run `dist/PrintHelper-v0.1.2.exe` from a writable folder.
+2. Choose **Add files...** on the start screen. Later, add more from the Pages panel. Click a page to open its **Page** controls: rotate left/right, crop, reset edits or remove it. Use **Move up** and **Move down** above the page list to reorder.
+3. Open the **Sheet** tab for paper size, orientation, 1/2/4 pages per sheet and color mode. Expand **Margins and spacing** or **Output quality** when needed. Two-up uses top/bottom cells in portrait and left/right cells in landscape; four-up reads left to right, then top to bottom.
+4. Inspect the centered sheet preview. Use **Previous** and **Next** below it to review every sheet. Blank cells on a final partial sheet remain white.
+5. Choose **Save PDF...** to create a new PDF, or **File > Save layout as...** to keep the arrangement as a reusable recipe. Choose a new filename for every save/export; replacement is intentionally refused even if a file dialog offers overwrite confirmation. Recipes reference the source files and do not embed them; keep those files at their original locations.
+6. To print, choose **Print...**, then set matching paper/orientation in printer Properties. Use 100% scale and one driver page per sheet to avoid applying N-up twice. The app rejects paper mismatches and margins smaller than the driver's printable area before starting a print job. Driver copies/collation are delegated to Windows. A successful spool operation does not confirm physical output.
 
-Settings are stored at `%LOCALAPPDATA%/PrintHelper/settings.json`. Source documents are held as immutable loaded snapshots during a session. Project recipes and exports go only to destinations chosen by the user. Closing with unsaved layout changes asks whether to keep editing or discard them. Changes are not autosaved.
+Settings are stored at `%LOCALAPPDATA%/PrintHelper/settings.json`. Source documents are held as immutable loaded snapshots during a session. Project recipes and exports go only to destinations chosen by the user. Closing with unsaved layout changes asks whether to keep editing or discard them. Changes are not autosaved. **Layout not saved** refers to the reusable arrangement; saving a PDF does not save that recipe.
 
 ## Fidelity and limits
 
@@ -58,18 +58,18 @@ Use a Windows x64 MSVC Rust toolchain (Rust 1.92 or later) and the Windows SDK/l
 Set-Location E:\work\github\print-helper
 ./scripts/check.ps1 -Offline
 ./scripts/package.ps1 -Offline
-python ./scripts/inspect-pe.py ./dist/PrintHelper-v0.1.1.exe
+python ./scripts/inspect-pe.py ./dist/PrintHelper-v0.1.2.exe
 ```
 
-Omit `-Offline` on a machine that needs to resolve dependencies. Packaging produces `dist/PrintHelper-v0.1.1.exe` and `dist/SHA256SUMS.txt`, with license notices. It verifies that embedded product/file versions and original filename match the Cargo version, then inspects PE imports and icons without starting the application. CI uses this same version-derived packaging path and retains an artifact without creating a release.
+Omit `-Offline` on a machine that needs to resolve dependencies. Packaging produces `dist/PrintHelper-v0.1.2.exe` and `dist/SHA256SUMS.txt`, with license notices. It verifies that embedded product/file versions and original filename match the Cargo version, then inspects PE imports and icons without starting the application. CI uses this same version-derived packaging path and retains an artifact without creating a release.
 
 Increment the package patch version before delivering a changed local build, even before publication. `Cargo.toml` is the source for the installed-version UI, update client, executable resources and package name; update the lockfile, current documentation and release notes together. Packaging validates the version but does not increment it automatically. Local commits track source changes independently of application versions.
 
 The original printer icon is defined in `assets/app-icon.svg`. After editing it, run `python scripts/generate-icon.py` to regenerate the PNG and multi-resolution ICO using the script's supported rectangle/circle subset. The normal check script verifies these assets are current. All icon sizes are embedded in the executable; the title bar and taskbar load the same resource without external asset files.
 
-For a later permitted runtime check, `PrintHelper-v0.1.1.exe --render-diagnostics <new-file.json>` runs the normal application and saves aggregate UI/raster/presentation counts and maximum durations when it exits. It is not a capture or benchmark mode and was not invoked during this no-GUI session. Measure process CPU and observe idle/minimized/restored behavior separately; diagnostic counters alone do not certify responsiveness.
+For a later permitted runtime check, `PrintHelper-v0.1.2.exe --render-diagnostics <new-file.json>` runs the normal application and saves aggregate UI/raster/presentation counts and maximum durations when it exits. It is not a capture or benchmark mode and was not invoked during this no-GUI session. Measure process CPU and observe idle/minimized/restored behavior separately; diagnostic counters alone do not certify responsiveness.
 
-See [architecture](docs/ARCHITECTURE.md), [validation and remaining checks](docs/VALIDATION.md), and the [current local release notes](docs/RELEASE_NOTES_v0.1.1.md).
+See [architecture](docs/ARCHITECTURE.md), [validation and remaining checks](docs/VALIDATION.md), and the [current local release notes](docs/RELEASE_NOTES_v0.1.2.md).
 
 ## Screenshots
 
