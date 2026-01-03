@@ -93,6 +93,12 @@ enum InspectorTab {
     Page,
 }
 
+#[derive(Clone, Copy)]
+struct PageDrag {
+    from: usize,
+    revision: u64,
+}
+
 struct App {
     project: Project,
     worker: Worker,
@@ -261,6 +267,125 @@ impl App {
         self.selected = target;
         self.sheet = target / self.project.layout.per_sheet;
     }
+    fn reorder_page(&mut self, from: usize, insertion: usize) -> bool {
+        let len = self.project.pages.len();
+        if from >= len || insertion > len {
+            return false;
+        }
+        let target = if insertion > from {
+            insertion - 1
+        } else {
+            insertion
+        };
+        if target == from {
+            self.select_page(from);
+            return false;
+        }
+        let page = self.project.pages.remove(from);
+        self.project.pages.insert(target, page);
+        self.selected = target;
+        self.sheet = target / self.project.layout.per_sheet;
+        self.inspector = InspectorTab::Page;
+        true
+    }
+
+    fn drop_blocked_reason(&self) -> Option<&'static str> {
+        if self.installing || self.quit_requested {
+            Some("PrintHelper is restarting. Add files after it opens again.")
+        } else if self.discard.is_some() {
+            Some("Finish the unsaved-layout choice before adding files.")
+        } else if self.worker.foreground_busy() {
+            Some("Wait for the current action, then drop your files again.")
+        } else if self.project.pages.len() >= 500 {
+            Some("This layout has 500 pages. Remove some pages before adding files.")
+        } else {
+            None
+        }
+    }
+
+    fn handle_file_drop(&mut self, ctx: &egui::Context) {
+        let files = ctx.input_mut(|input| std::mem::take(&mut input.raw.dropped_files));
+        if files.is_empty() {
+            return;
+        }
+        if let Some(reason) = self.drop_blocked_reason() {
+            self.status = format!("Files were not added. {reason}");
+            return;
+        }
+        let Some(paths) = files
+            .into_iter()
+            .map(|file| file.path)
+            .collect::<Option<Vec<_>>>()
+        else {
+            self.error =
+                Some("Drop local PDFs or images from File Explorer. No files were added.".into());
+            return;
+        };
+        let count = paths.len();
+        if self.worker.submit(Task::ImportPaths {
+            existing: self.project.pages.len(),
+            paths,
+        }) {
+            self.error = None;
+            self.status = format!("Adding {count} dropped file(s)...");
+        } else {
+            self.error =
+                Some("Could not start the file import. Try dropping the files again.".into());
+        }
+    }
+
+    fn file_drop_overlay(&self, ctx: &egui::Context) {
+        if !ctx.input(|input| !input.raw.hovered_files.is_empty()) {
+            return;
+        }
+        let rect = ctx.available_rect().shrink(8.0);
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("file-drop-overlay"),
+        ));
+        let blocked = self.drop_blocked_reason();
+        painter.rect(
+            rect,
+            10.0,
+            egui::Color32::from_rgba_unmultiplied(250, 251, 253, 245),
+            egui::Stroke::new(
+                2.0,
+                if blocked.is_some() {
+                    design::ERROR
+                } else {
+                    design::ACCENT
+                },
+            ),
+            egui::StrokeKind::Inside,
+        );
+        painter.text(
+            rect.center() - Vec2::new(0.0, 18.0),
+            egui::Align2::CENTER_CENTER,
+            if blocked.is_some() {
+                "Cannot add files right now"
+            } else {
+                "Drop to add files"
+            },
+            egui::FontId::proportional(21.0),
+            design::INK,
+        );
+        let text = blocked.unwrap_or("PDFs and images. Your originals stay unchanged.");
+        let galley = painter.layout(
+            text.into(),
+            egui::FontId::proportional(14.0),
+            design::SECONDARY,
+            (rect.width() - 40.0).max(1.0),
+        );
+        painter.galley(
+            egui::pos2(
+                rect.center().x - galley.size().x / 2.0,
+                rect.center().y + 10.0,
+            ),
+            galley,
+            design::SECONDARY,
+        );
+    }
+
     fn remove_selected(&mut self) {
         if self.selected < self.project.pages.len() {
             self.project.pages.remove(self.selected);
@@ -310,63 +435,65 @@ impl App {
             Discard::Close => {}
         }
     }
-    fn receive(&mut self, ctx: &egui::Context) {
-        while let Ok(event) = self.worker.receiver.try_recv() {
-            match event {
-                Event::Progress(text, ratio) => self.progress = Some((text, ratio)),
-                Event::Finished(result) => {
-                    let kind = self.worker.finish();
-                    self.progress = None;
-                    match result {
-                        Err(e) => {
-                            if kind == Some(WorkKind::Preview) {
-                                if self.requested != Some(self.revision) {
-                                    continue;
-                                }
-                                self.preview_failed = true;
+    fn receive_document(&mut self, ctx: &egui::Context, event: Event) {
+        match event {
+            Event::Progress(text, ratio) => self.progress = Some((text, ratio)),
+            Event::Finished(result) => {
+                let kind = self.worker.finish();
+                self.progress = None;
+                match result {
+                    Err(e) => {
+                        if kind == Some(WorkKind::Preview) {
+                            if self.requested != Some(self.revision) {
+                                return;
                             }
-                            self.error = Some(e);
+                            self.preview_failed = true;
                         }
-                        Ok(Outcome::Imported(items)) => {
-                            let old = self.project.clone();
-                            for (page, image) in items {
-                                self.project.pages.push(page.clone());
-                                self.cache(ctx, page, image);
-                            }
-                            self.checkpoint(old);
-                            self.status = format!("{} pages ready", self.project.pages.len());
-                        }
-                        Ok(Outcome::Opened(project, images)) => {
-                            self.project = project;
-                            self.undo.clear();
-                            self.redo.clear();
-                            self.thumbnails.clear();
-                            for (page, image) in self.project.pages.clone().into_iter().zip(images)
-                            {
-                                self.cache(ctx, page, image);
-                            }
-                            self.touch();
-                            self.dirty = false;
-                            self.status = "Project opened; source hashes verified".into();
-                        }
-                        Ok(Outcome::Preview { revision, image }) => {
-                            if revision == self.revision {
-                                self.preview_failed = false;
-                                self.preview = Some(Self::texture(ctx, image, "Output sheet"));
-                                self.preview_revision = Some(revision);
-                            }
-                        }
-                        Ok(Outcome::Thumbnail { page, image }) => self.cache(ctx, page, image),
-                        Ok(Outcome::Message(message)) => {
-                            if message.starts_with("Saved ") {
-                                self.dirty = false;
-                            }
-                            self.status = message;
-                        }
-                        Ok(_) => {}
+                        self.error = Some(e);
                     }
+                    Ok(Outcome::Imported(items)) => {
+                        let old = self.project.clone();
+                        for (page, image) in items {
+                            self.project.pages.push(page.clone());
+                            self.cache(ctx, page, image);
+                        }
+                        self.checkpoint(old);
+                        self.status = format!("{} pages ready", self.project.pages.len());
+                    }
+                    Ok(Outcome::Opened(project, images)) => {
+                        self.project = project;
+                        self.undo.clear();
+                        self.redo.clear();
+                        self.thumbnails.clear();
+                        for (page, image) in self.project.pages.clone().into_iter().zip(images) {
+                            self.cache(ctx, page, image);
+                        }
+                        self.touch();
+                        self.dirty = false;
+                        self.status = "Project opened; source hashes verified".into();
+                    }
+                    Ok(Outcome::Preview { revision, image }) => {
+                        if revision == self.revision {
+                            self.preview_failed = false;
+                            self.preview = Some(Self::texture(ctx, image, "Output sheet"));
+                            self.preview_revision = Some(revision);
+                        }
+                    }
+                    Ok(Outcome::Thumbnail { page, image }) => self.cache(ctx, page, image),
+                    Ok(Outcome::Message(message)) => {
+                        if message.starts_with("Saved ") {
+                            self.dirty = false;
+                        }
+                        self.status = message;
+                    }
+                    Ok(_) => {}
                 }
             }
+        }
+    }
+    fn receive(&mut self, ctx: &egui::Context) {
+        while let Ok(event) = self.worker.receiver.try_recv() {
+            self.receive_document(ctx, event);
         }
         while let Ok(event) = self.network.receiver.try_recv() {
             match event {
@@ -493,7 +620,7 @@ impl App {
             });
         });
     }
-    fn pages_panel(&mut self, ctx: &egui::Context) {
+    fn pages_panel(&mut self, ctx: &egui::Context) -> Option<egui::Rect> {
         egui::SidePanel::left("pages")
             .exact_width(216.0)
             .frame(egui::Frame::new().fill(design::PANEL).inner_margin(12))
@@ -507,8 +634,11 @@ impl App {
                 });
                 ui.add_space(4.0);
                 if self.project.pages.is_empty() {
+                    if egui::DragAndDrop::has_payload_of_type::<PageDrag>(ctx) {
+                        egui::DragAndDrop::clear_payload(ctx);
+                    }
                     design::help(ui, "Your pages will appear here.");
-                    return;
+                    return None;
                 }
                 if ui
                     .add_enabled(
@@ -543,29 +673,93 @@ impl App {
                         self.move_selected(1);
                     }
                 });
-                ui.add_space(4.0);
-                egui::ScrollArea::vertical().id_salt("page-list").show_rows(
-                    ui,
-                    design::PAGE_ROW_HEIGHT,
-                    self.project.pages.len(),
-                    |ui, rows| {
-                        for index in rows {
-                            let page = &self.project.pages[index];
-                            let texture = self
-                                .thumbnails
-                                .iter()
-                                .rev()
-                                .find(|(p, _)| p == page)
-                                .map(|(_, t)| t);
-                            if design::page_card(ui, index, page, index == self.selected, texture)
-                                .clicked()
-                            {
-                                self.select_page(index);
+                design::help(ui, RichText::new("Drag pages to reorder").small());
+                let can_reorder = !self.worker.foreground_busy()
+                    && !self.installing
+                    && self.discard.is_none()
+                    && !self.settings_open
+                    && self.error.is_none();
+                let output = egui::ScrollArea::vertical()
+                    .id_salt("page-list")
+                    .auto_shrink([false, false])
+                    .show_rows(
+                        ui,
+                        design::PAGE_ROW_HEIGHT,
+                        self.project.pages.len(),
+                        |ui, rows| {
+                            for index in rows {
+                                let page = &self.project.pages[index];
+                                let texture = self
+                                    .thumbnails
+                                    .iter()
+                                    .rev()
+                                    .find(|(p, _)| p == page)
+                                    .map(|(_, t)| t);
+                                let response = design::page_card(
+                                    ui,
+                                    index,
+                                    page,
+                                    index == self.selected,
+                                    texture,
+                                    can_reorder,
+                                );
+                                if can_reorder {
+                                    response.dnd_set_drag_payload(PageDrag {
+                                        from: index,
+                                        revision: self.revision,
+                                    });
+                                }
+                                if response.clicked() {
+                                    self.select_page(index);
+                                }
+                            }
+                        },
+                    );
+                if let Some(payload) = egui::DragAndDrop::payload::<PageDrag>(ctx) {
+                    if !can_reorder
+                        || payload.revision != self.revision
+                        || payload.from >= self.project.pages.len()
+                        || !ctx.input(|input| input.focused)
+                    {
+                        egui::DragAndDrop::clear_payload(ctx);
+                    } else if let Some(pointer) = ctx.pointer_interact_pos() {
+                        let pitch = design::PAGE_ROW_HEIGHT + ui.spacing().item_spacing.y;
+                        if let Some((insertion, marker)) = design::page_drop_slot(
+                            pointer,
+                            output.inner_rect,
+                            output.state.offset.y,
+                            pitch,
+                            self.project.pages.len(),
+                        ) {
+                            ui.painter().with_clip_rect(output.inner_rect).line_segment(
+                                [
+                                    egui::pos2(output.inner_rect.left(), marker),
+                                    egui::pos2(output.inner_rect.right(), marker),
+                                ],
+                                egui::Stroke::new(3.0, design::ACCENT),
+                            );
+                            if ctx.input(|input| input.pointer.any_released()) {
+                                egui::DragAndDrop::clear_payload(ctx);
+                                self.reorder_page(payload.from, insertion);
+                                ctx.request_repaint();
+                            } else if let Some(offset) = design::page_drag_scroll(
+                                pointer,
+                                output.inner_rect,
+                                output.state.offset.y,
+                                output.content_size.y,
+                                ctx.input(|input| input.stable_dt),
+                            ) {
+                                let mut state = output.state;
+                                state.offset.y = offset;
+                                state.store(ctx, output.id);
+                                ctx.request_repaint_after(Duration::from_millis(16));
                             }
                         }
-                    },
-                );
-            });
+                    }
+                }
+                Some(output.inner_rect)
+            })
+            .inner
     }
     fn layout_panel(&mut self, ctx: &egui::Context) {
         egui::SidePanel::right("layout")
@@ -945,23 +1139,9 @@ impl App {
     }
 }
 
-impl print_helper::software::DesktopApp for App {
-    fn background(&mut self, ctx: &egui::Context) {
-        self.receive(ctx);
-    }
-    fn request_close(&mut self, ctx: &egui::Context) -> bool {
-        if self.dirty {
-            self.discard = Some(Discard::Close);
-            ctx.request_repaint();
-            false
-        } else {
-            true
-        }
-    }
-    fn should_exit(&self) -> bool {
-        self.quit_requested
-    }
-    fn update(&mut self, ctx: &egui::Context) {
+impl App {
+    fn workspace(&mut self, ctx: &egui::Context) -> Option<egui::Rect> {
+        self.handle_file_drop(ctx);
         self.toolbar(ctx);
         let before = self.project.clone();
         design::status_panel(ctx, |ui| {
@@ -991,13 +1171,14 @@ impl print_helper::software::DesktopApp for App {
             ui.add(egui::Label::new(&self.status).truncate())
                 .on_hover_text(&self.status);
         });
-        self.pages_panel(ctx);
+        let page_list = self.pages_panel(ctx);
         self.layout_panel(ctx);
         if self.project != before {
             self.checkpoint(before);
         }
         self.preview_panel(ctx);
         self.dialogs(ctx);
+        self.file_drop_overlay(ctx);
         if !self.project.pages.is_empty()
             && self.requested != Some(self.revision)
             && !self.worker.is_busy()
@@ -1025,6 +1206,28 @@ impl print_helper::software::DesktopApp for App {
         {
             self.thumbnail_requested = Some(page.clone());
         }
+        page_list
+    }
+}
+
+impl print_helper::software::DesktopApp for App {
+    fn background(&mut self, ctx: &egui::Context) {
+        self.receive(ctx);
+    }
+    fn request_close(&mut self, ctx: &egui::Context) -> bool {
+        if self.dirty {
+            self.discard = Some(Discard::Close);
+            ctx.request_repaint();
+            false
+        } else {
+            true
+        }
+    }
+    fn should_exit(&self) -> bool {
+        self.quit_requested
+    }
+    fn update(&mut self, ctx: &egui::Context) {
+        self.workspace(ctx);
     }
 }
 
@@ -1032,6 +1235,284 @@ impl print_helper::software::DesktopApp for App {
 mod tests {
     use super::*;
     use print_helper::software::{BackgroundWake, DesktopApp};
+
+    fn pointer_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        }
+    }
+
+    fn drag_frame(
+        app: &mut App,
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        time: f64,
+    ) -> egui::Rect {
+        let mut viewport = None;
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1220.0, 850.0),
+                )),
+                events,
+                time: Some(time),
+                ..Default::default()
+            },
+            |ctx| {
+                viewport = app.workspace(ctx);
+            },
+        );
+        viewport.unwrap()
+    }
+
+    #[test]
+    fn page_drag_commits_once_with_selection_and_one_undo_snapshot() {
+        let ctx = egui::Context::default();
+        let mut app = fixture(&ctx);
+        let before = app.project.clone();
+        let textures: Vec<_> = app.thumbnails.iter().map(|(_, t)| t.id()).collect();
+        let mut viewport = egui::Rect::NOTHING;
+        for frame in 0..3 {
+            viewport = drag_frame(&mut app, &ctx, vec![], frame as f64 * 0.016);
+        }
+        let source = viewport.min + Vec2::new(80.0, 50.0);
+        let target = viewport.min + Vec2::new(80.0, 3.0 * 108.0 + 80.0);
+        drag_frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(source),
+                pointer_button(source, true),
+            ],
+            0.048,
+        );
+        drag_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(source + Vec2::new(0.0, 12.0))],
+            0.064,
+        );
+        drag_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(target)],
+            0.080,
+        );
+        assert!(egui::DragAndDrop::has_payload_of_type::<PageDrag>(&ctx));
+        assert_eq!(app.project, before);
+        assert!(app.undo.is_empty());
+        drag_frame(&mut app, &ctx, vec![pointer_button(target, false)], 0.096);
+        assert_eq!(
+            app.project.pages,
+            vec![
+                before.pages[1].clone(),
+                before.pages[2].clone(),
+                before.pages[3].clone(),
+                before.pages[0].clone()
+            ]
+        );
+        assert_eq!((app.selected, app.sheet), (3, 1));
+        assert_eq!(app.undo, vec![before]);
+        assert!(app.dirty);
+        assert_eq!(
+            app.thumbnails
+                .iter()
+                .map(|(_, t)| t.id())
+                .collect::<Vec<_>>(),
+            textures
+        );
+        assert!(!egui::DragAndDrop::has_any_payload(&ctx));
+    }
+
+    #[test]
+    fn cancelled_outside_and_same_position_drags_do_not_change_order_or_undo() {
+        for scenario in 0..4 {
+            let ctx = egui::Context::default();
+            let mut app = fixture(&ctx);
+            let before = app.project.clone();
+            let mut viewport = egui::Rect::NOTHING;
+            for frame in 0..3 {
+                viewport = drag_frame(&mut app, &ctx, vec![], frame as f64 * 0.016);
+            }
+            let source = viewport.min + Vec2::new(80.0, 30.0);
+            let target = match scenario {
+                0 | 3 => viewport.min + Vec2::new(80.0, 260.0),
+                1 => egui::pos2(-10.0, -10.0),
+                _ => viewport.min + Vec2::new(80.0, 70.0),
+            };
+            drag_frame(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(source),
+                    pointer_button(source, true),
+                ],
+                0.048,
+            );
+            drag_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(source + Vec2::new(0.0, 12.0))],
+                0.064,
+            );
+            drag_frame(
+                &mut app,
+                &ctx,
+                vec![egui::Event::PointerMoved(target)],
+                0.080,
+            );
+            if scenario == 3 {
+                app.select_page(3);
+            }
+            if scenario == 0 {
+                drag_frame(
+                    &mut app,
+                    &ctx,
+                    vec![egui::Event::Key {
+                        key: egui::Key::Escape,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    }],
+                    0.096,
+                );
+            }
+            drag_frame(&mut app, &ctx, vec![pointer_button(target, false)], 0.112);
+            assert_eq!(app.project, before);
+            assert!(app.undo.is_empty());
+            assert!(!app.dirty);
+            assert!(!egui::DragAndDrop::has_any_payload(&ctx));
+        }
+    }
+
+    #[test]
+    fn virtual_and_blocked_file_drops_leave_the_project_unchanged() {
+        let ctx = egui::Context::default();
+        let mut app = fixture(&ctx);
+        let before = app.project.clone();
+        let _ = ctx.run(
+            egui::RawInput {
+                dropped_files: vec![egui::DroppedFile {
+                    name: "virtual.png".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            |ctx| app.handle_file_drop(ctx),
+        );
+        assert!(app.error.as_ref().unwrap().contains("local"));
+        assert!(!app.worker.is_busy());
+        app.error = None;
+        app.discard = Some(Discard::Close);
+        let _ = ctx.run(
+            egui::RawInput {
+                dropped_files: vec![egui::DroppedFile {
+                    path: Some("not-read.png".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            |ctx| app.handle_file_drop(ctx),
+        );
+        assert!(app.status.contains("not added"));
+        assert_eq!(app.project, before);
+        assert!(!app.worker.is_busy());
+        app.discard = None;
+        assert!(app.worker.submit(Task::Clear));
+        let _ = ctx.run(
+            egui::RawInput {
+                dropped_files: vec![egui::DroppedFile {
+                    path: Some("not-read.png".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            |ctx| app.handle_file_drop(ctx),
+        );
+        assert!(app.status.contains("not added"));
+        assert_eq!(app.project, before);
+    }
+
+    #[test]
+    fn native_drop_input_imports_once_across_layout_passes_without_a_picker() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(".test-output")
+            .join(format!("ui-drop-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("generated.png");
+        let second_path = root.join("second.png");
+        image::RgbImage::from_pixel(8, 12, image::Rgb([20, 50, 120]))
+            .save(&path)
+            .unwrap();
+        image::RgbImage::from_pixel(8, 12, image::Rgb([150, 30, 20]))
+            .save(&second_path)
+            .unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = App::with_settings(
+            &ctx,
+            BackgroundWake::new(|| {}),
+            Settings {
+                startup_updates: false,
+            },
+            None,
+        );
+        let mut passes = 0;
+        let _ = ctx.run(
+            egui::RawInput {
+                dropped_files: vec![
+                    egui::DroppedFile {
+                        path: Some(path.clone()),
+                        ..Default::default()
+                    },
+                    egui::DroppedFile {
+                        path: Some(second_path.clone()),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+            |ctx| {
+                passes += 1;
+                app.handle_file_drop(ctx);
+                if passes == 1 {
+                    ctx.request_discard("Test an extra layout pass");
+                }
+            },
+        );
+        assert!(
+            passes >= 2,
+            "The fixture must exercise a repeated layout pass"
+        );
+        assert!(!app.status.contains("not added"));
+        while app.worker.is_busy() {
+            let event = app
+                .worker
+                .receiver
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            app.receive_document(&ctx, event);
+        }
+        assert!(app.error.is_none(), "{:?}", app.error);
+        assert_eq!(app.project.pages.len(), 2);
+        assert_eq!(app.undo.len(), 1);
+        assert_eq!(app.project.pages[0].path, path.canonicalize().unwrap());
+        assert_eq!(
+            app.project.pages[1].path,
+            second_path.canonicalize().unwrap()
+        );
+        let _ = ctx.run(egui::RawInput::default(), |ctx| app.handle_file_drop(ctx));
+        assert!(!app.worker.is_busy());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(second_path).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
 
     fn fixture(ctx: &egui::Context) -> App {
         // Inject settings: no real settings read, network, native window or dialog.

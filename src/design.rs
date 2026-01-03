@@ -97,10 +97,15 @@ pub fn page_card(
     page: &print_helper::layout::Page,
     selected: bool,
     texture: Option<&egui::TextureHandle>,
+    draggable: bool,
 ) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(
         Vec2::new(ui.available_width(), PAGE_ROW_HEIGHT),
-        egui::Sense::click(),
+        if draggable {
+            egui::Sense::click_and_drag()
+        } else {
+            egui::Sense::click()
+        },
     );
     let emphasized = selected || response.has_focus();
     ui.painter().rect(
@@ -184,7 +189,61 @@ pub fn page_card(
             format!("Page {}: {}", index + 1, page.path.display()),
         )
     });
-    response.on_hover_text(page.path.display().to_string())
+    if !response.dragged() {
+        let response = if draggable {
+            response.on_hover_cursor(egui::CursorIcon::Grab)
+        } else {
+            response
+        };
+        response.on_hover_text(page.path.display().to_string())
+    } else {
+        response
+    }
+}
+
+/// Includes row gaps and the space after the final row, including scrolled lists.
+pub fn page_drop_slot(
+    pointer: egui::Pos2,
+    viewport: egui::Rect,
+    offset: f32,
+    pitch: f32,
+    count: usize,
+) -> Option<(usize, f32)> {
+    if viewport.height() <= 2.0 || !viewport.contains(pointer) {
+        return None;
+    }
+    let local_y = (pointer.y - viewport.top() + offset).max(0.0);
+    let slot = ((local_y + pitch - PAGE_ROW_HEIGHT / 2.0) / pitch)
+        .floor()
+        .max(0.0) as usize;
+    let slot = slot.min(count);
+    let marker = (viewport.top() + slot as f32 * pitch - offset - (pitch - PAGE_ROW_HEIGHT) / 2.0)
+        .clamp(viewport.top() + 1.0, viewport.bottom() - 1.0);
+    Some((slot, marker))
+}
+
+/// No timer is needed when the pointer is outside the edge bands or at a limit.
+pub fn page_drag_scroll(
+    pointer: egui::Pos2,
+    viewport: egui::Rect,
+    offset: f32,
+    content_height: f32,
+    dt: f32,
+) -> Option<f32> {
+    if !viewport.contains(pointer) {
+        return None;
+    }
+    let edge = 28.0_f32.min(viewport.height() / 2.0);
+    let direction = if pointer.y < viewport.top() + edge {
+        -1.0
+    } else if pointer.y > viewport.bottom() - edge {
+        1.0
+    } else {
+        0.0
+    };
+    let next = (offset + direction * 360.0 * dt.clamp(0.0, 0.05))
+        .clamp(0.0, (content_height - viewport.height()).max(0.0));
+    (next != offset).then_some(next)
 }
 
 /// Reserve a stable stage and center the paper without enlarging the source bitmap.
@@ -278,6 +337,35 @@ mod tests {
     use egui::{CentralPanel, ColorImage, RawInput, Rect, TextureOptions, pos2, vec2};
 
     #[test]
+    fn page_drop_slots_and_edge_scroll_respect_viewport_and_limits() {
+        let viewport = Rect::from_min_max(pos2(10.0, 100.0), pos2(200.0, 500.0));
+        for (y, slot) in [
+            (100.0, 0),
+            (149.0, 0),
+            (151.0, 1),
+            (207.0, 1),
+            (259.0, 2),
+            (499.0, 4),
+        ] {
+            let (actual, marker) = page_drop_slot(pos2(50.0, y), viewport, 0.0, 108.0, 4).unwrap();
+            assert_eq!(actual, slot);
+            assert!((viewport.top()..=viewport.bottom()).contains(&marker));
+        }
+        assert_eq!(
+            page_drop_slot(pos2(50.0, 100.0), viewport, 216.0, 108.0, 20)
+                .unwrap()
+                .0,
+            2
+        );
+        assert!(page_drop_slot(pos2(250.0, 200.0), viewport, 0.0, 108.0, 4).is_none());
+        assert!(page_drag_scroll(pos2(50.0, 300.0), viewport, 0.0, 1000.0, 0.016).is_none());
+        assert!(page_drag_scroll(pos2(50.0, 101.0), viewport, 0.0, 1000.0, 0.016).is_none());
+        assert!(page_drag_scroll(pos2(50.0, 499.0), viewport, 600.0, 1000.0, 0.016).is_none());
+        assert!(page_drag_scroll(pos2(250.0, 499.0), viewport, 0.0, 1000.0, 0.016).is_none());
+        assert!(page_drag_scroll(pos2(50.0, 499.0), viewport, 0.0, 1000.0, 0.016).unwrap() > 0.0);
+    }
+
+    #[test]
     fn palette_keeps_small_text_readable() {
         fn luminance(color: Color32) -> f64 {
             let channels = [color.r(), color.g(), color.b()].map(|c| {
@@ -363,7 +451,7 @@ mod tests {
                     .frame(egui::Frame::new().inner_margin(24))
                     .show(ctx, |ui| {
                         let response =
-                            page_card(ui, 9, &page, selected, loaded.then_some(&texture));
+                            page_card(ui, 9, &page, selected, loaded.then_some(&texture), true);
                         geometry = Some(response.rect);
                         if index == 4 {
                             assert!(response.clicked());
