@@ -19,6 +19,10 @@ use std::{
 
 pub enum Task {
     Import(usize),
+    ImportPaths {
+        existing: usize,
+        paths: Vec<PathBuf>,
+    },
     Open,
     Save(Project),
     Clear,
@@ -185,6 +189,31 @@ fn thumbnails(
     }
     Ok(images)
 }
+fn import_paths(
+    existing: usize,
+    paths: &[PathBuf],
+    catalog: &mut Catalog,
+    cancel: &AtomicBool,
+    progress: &impl Fn(String, f32),
+) -> Result<Outcome> {
+    ensure!(!paths.is_empty(), "No local files were provided");
+    ensure!(
+        existing <= 500 && paths.len() <= 500 - existing,
+        "Project would exceed 500 pages"
+    );
+    ensure!(!cancel.load(Ordering::Relaxed), "Import cancelled");
+    let mut pending = catalog.clone();
+    let pages = document::import(paths, &mut pending)?;
+    ensure!(
+        pages.len() <= 500 - existing,
+        "Project would exceed 500 pages"
+    );
+    let images = thumbnails(&pages, &pending, cancel, progress)?;
+    ensure!(!cancel.load(Ordering::Relaxed), "Import cancelled");
+    *catalog = pending;
+    Ok(Outcome::Imported(pages.into_iter().zip(images).collect()))
+}
+
 fn run(
     task: Task,
     catalog: &mut Catalog,
@@ -200,15 +229,10 @@ fn run(
             let Some(paths) = dialogs::pick_inputs()? else {
                 return Ok(Outcome::Cancelled);
             };
-            let mut pending = catalog.clone();
-            let pages = document::import(&paths, &mut pending)?;
-            ensure!(
-                existing + pages.len() <= 500,
-                "Project would exceed 500 pages"
-            );
-            let images = thumbnails(&pages, &pending, cancel, &progress)?;
-            *catalog = pending;
-            Ok(Outcome::Imported(pages.into_iter().zip(images).collect()))
+            import_paths(existing, &paths, catalog, cancel, &progress)
+        }
+        Task::ImportPaths { existing, paths } => {
+            import_paths(existing, &paths, catalog, cancel, &progress)
         }
         Task::Open => {
             let Some(path) = dialogs::open_layout()? else {
@@ -314,6 +338,118 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_path_import_preserves_order_and_rolls_back_failed_or_cancelled_batches() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(".test-output")
+            .join(format!(
+                "drop-worker-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        std::fs::create_dir_all(&root).unwrap();
+        let paths: Vec<_> = ["red.png", "blue.png", "green.png"]
+            .into_iter()
+            .map(|name| root.join(name))
+            .collect();
+        for (path, color) in paths
+            .iter()
+            .zip([[200, 20, 10], [10, 20, 200], [20, 180, 10]])
+        {
+            RgbImage::from_pixel(8, 12, image::Rgb(color))
+                .save(path)
+                .unwrap();
+        }
+        let originals: Vec<_> = paths
+            .iter()
+            .map(|path| std::fs::read(path).unwrap())
+            .collect();
+        let cancel = AtomicBool::new(false);
+        let mut catalog = Catalog::new();
+        let result = run(
+            Task::ImportPaths {
+                existing: 0,
+                paths: vec![paths[1].clone(), paths[0].clone()],
+            },
+            &mut catalog,
+            &cancel,
+            |_, _| {},
+        )
+        .unwrap();
+        let Outcome::Imported(items) = result else {
+            panic!("Expected imported pages")
+        };
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].0.path, paths[1].canonicalize().unwrap());
+        assert_eq!(*items[0].1.get_pixel(0, 0), image::Rgb([10, 20, 200]));
+        assert_eq!(items[1].0.path, paths[0].canonicalize().unwrap());
+        let bad = root.join("not-an-image.txt");
+        std::fs::write(&bad, "Generated unsupported input").unwrap();
+        assert!(
+            run(
+                Task::ImportPaths {
+                    existing: 2,
+                    paths: vec![paths[2].clone(), bad.clone()]
+                },
+                &mut catalog,
+                &cancel,
+                |_, _| {}
+            )
+            .is_err()
+        );
+        assert_eq!(catalog.len(), 2);
+        assert!(!catalog.contains_key(&paths[2].canonicalize().unwrap()));
+        assert!(
+            run(
+                Task::ImportPaths {
+                    existing: 2,
+                    paths: vec![paths[2].clone()]
+                },
+                &mut catalog,
+                &cancel,
+                |_, _| {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(catalog.len(), 2);
+        cancel.store(false, Ordering::Relaxed);
+        assert!(
+            run(
+                Task::ImportPaths {
+                    existing: 500,
+                    paths: vec![paths[2].clone()]
+                },
+                &mut catalog,
+                &cancel,
+                |_, _| {}
+            )
+            .is_err()
+        );
+        assert!(
+            run(
+                Task::ImportPaths {
+                    existing: 2,
+                    paths: vec![]
+                },
+                &mut catalog,
+                &cancel,
+                |_, _| {}
+            )
+            .is_err()
+        );
+        for (path, original) in paths.iter().zip(originals) {
+            assert_eq!(std::fs::read(path).unwrap(), original);
+            std::fs::remove_file(path).unwrap();
+        }
+        std::fs::remove_file(bad).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
 
     #[test]
     fn sheet_render_does_not_depend_on_a_selected_thumbnail_from_another_sheet() {
