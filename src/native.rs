@@ -180,6 +180,9 @@ impl Host {
             .present()
             .map_err(|e| anyhow::anyhow!("GDI presentation: {e}"))?;
         self.diagnostics.presentations += 1;
+        if self.diagnostics.presentations == 1 {
+            print_helper::updater::cleanup_after_startup();
+        }
         self.diagnostics.exposure_presentations += u64::from(exposure);
         self.diagnostics.max_present_us = self
             .diagnostics

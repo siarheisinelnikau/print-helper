@@ -2,12 +2,12 @@ use print_helper::updater::{self, Release};
 use semver::Version;
 
 fn release(version: &str) -> Release {
-    serde_json::from_value(serde_json::json!({
-        "tag_name": format!("v{version}"), "draft": false, "prerelease": false,
+    serde_json::json!({
+        "tag_name": format!("v{version}"), "html_url": format!("{}/releases/tag/v{version}",updater::REPOSITORY), "draft": false, "prerelease": false,
         "assets": [{"name": format!("PrintHelper-v{version}.exe"),
             "browser_download_url": format!("{}/releases/download/v{version}/PrintHelper-v{version}.exe", updater::REPOSITORY),
             "size": 10000, "digest": format!("sha256:{}", "a".repeat(64))}]
-    })).unwrap()
+    })
 }
 
 #[test]
@@ -34,7 +34,7 @@ fn stable_version_order_is_numeric_and_prereleases_are_excluded() {
             .is_none()
     );
     let mut draft = release("1.0.0");
-    draft.draft = true;
+    draft["draft"] = true.into();
     assert!(updater::select(draft, &current).unwrap().is_none());
 }
 
@@ -52,7 +52,7 @@ fn build_metadata_does_not_trigger_reinstallation_and_repeated_tag_prefixes_fail
             .is_none()
     );
     let mut r = release("0.10.0");
-    r.tag_name = "vv0.10.0".into();
+    r["tag_name"] = "vv0.10.0".into();
     assert!(updater::select(r, &current).is_err());
 }
 
@@ -92,19 +92,19 @@ fn test_pe() -> Vec<u8> {
 fn incompatible_missing_untrusted_and_unverifiable_assets_fail_closed() {
     let current = Version::parse("0.1.0").unwrap();
     let mut r = release("0.2.0");
-    r.assets.clear();
+    r["assets"] = serde_json::json!([]);
     assert!(updater::select(r, &current).is_err());
     let mut r = release("0.2.0");
-    r.assets[0].browser_download_url = "https://example.com/a.exe".into();
+    r["assets"][0]["browser_download_url"] = "https://example.com/a.exe".into();
     assert!(updater::select(r, &current).is_err());
     let mut r = release("0.2.0");
-    r.assets[0].digest = None;
+    r["assets"][0]["digest"] = serde_json::Value::Null;
     assert!(updater::select(r, &current).is_err());
     let mut r = release("0.2.0");
-    r.assets[0].digest = Some("sha256:wrong".into());
+    r["assets"][0]["digest"] = "sha256:wrong".into();
     assert!(updater::select(r, &current).is_err());
     let mut r = release("0.2.0");
-    r.assets[0].size = 201_000_000;
+    r["assets"][0]["size"] = 201_000_000.into();
     assert!(updater::select(r, &current).is_err());
 }
 
@@ -164,10 +164,13 @@ fn malformed_pe_headers_and_sections_are_rejected_even_with_matching_hashes() {
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
         cases.push(bytes);
     }
-    for bytes in cases {
+    for (index, bytes) in cases.into_iter().enumerate() {
         let hash = format!("sha256:{:x}", Sha256::digest(&bytes));
         std::fs::write(&path, &bytes).unwrap();
-        assert!(updater::validate_executable(&path, &hash).is_err());
+        assert!(
+            updater::validate_executable(&path, &hash).is_err(),
+            "malformed PE case {index} accepted"
+        );
     }
     std::fs::remove_file(path).unwrap();
 }

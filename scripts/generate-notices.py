@@ -25,6 +25,8 @@ for package in sorted(metadata["packages"], key=lambda p: (p["name"], p["version
                            ("license", "licence", "copying", "notice", "copyright", "unlicense"))
                         or p.name in ("OFL.txt", "UFL.txt", "Hack-Regular.txt"))
                    and p.suffix.lower() not in (".rs", ".toml", ".json", ".png"))
+    if package["name"] == "rust-auto-updator":
+        files.append(base.parents[1] / "LICENSE")
     if not files:
         declared = package.get("license", "")
         choice = next((s for s in ("Apache-2.0", "BSL-1.0", "CC0-1.0") if s in declared), None)
