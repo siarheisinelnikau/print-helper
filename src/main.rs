@@ -19,6 +19,10 @@ mod native;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<_> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|arg| arg == "--apply-update") {
+        anyhow::ensure!(args.len() == 2, "Invalid update helper arguments");
+        return rust_auto_updator::apply_update(&updater::config()).map_err(anyhow::Error::msg);
+    }
     if args.get(1).is_some_and(|s| s == "--finish-update") {
         let result = (|| -> anyhow::Result<()> {
             anyhow::ensure!(args.len() == 5, "Invalid update helper arguments");
@@ -44,24 +48,6 @@ fn main() -> anyhow::Result<()> {
     } else {
         None
     };
-    // A helper can still be exiting when the new app starts. Cleanup is optional and narrow.
-    if args.get(1).is_some_and(|s| s == "--updated")
-        && let (Some(staged), Ok(current)) = (
-            args.get(2),
-            std::env::current_exe().and_then(|p| p.canonicalize()),
-        )
-        && let Ok(staged) = PathBuf::from(staged).canonicalize()
-        && staged != current
-        && staged.parent() == current.parent()
-        && staged
-            .extension()
-            .is_some_and(|s| s.eq_ignore_ascii_case("exe"))
-        && staged
-            .file_name()
-            .is_some_and(|s| s.to_string_lossy().starts_with(".printhelper-update-"))
-    {
-        let _ = std::fs::remove_file(staged);
-    }
     let diagnostics = if args.get(1).is_some_and(|s| s == "--render-diagnostics") {
         anyhow::ensure!(
             args.len() == 3,
@@ -122,10 +108,10 @@ struct App {
     progress: Option<(String, f32)>,
     settings: Settings,
     settings_open: bool,
-    update: Option<updater::Update>,
+    update: Option<Box<updater::Update>>,
     update_status: String,
     startup_check: bool,
-    staged_update: Option<(PathBuf, String)>,
+    staged_update: Option<updater::Prepared>,
     installing: bool,
     quit_requested: bool,
     downloading: bool,
@@ -513,8 +499,8 @@ impl App {
                                 .unwrap_or_else(|| "Up to date".into());
                             self.update = update;
                         }
-                        Ok(Outcome::Downloaded(path, digest)) => {
-                            self.staged_update = Some((path, digest));
+                        Ok(Outcome::Downloaded(prepared)) => {
+                            self.staged_update = Some(prepared);
                             self.update_status =
                                 "Download verified. Save your layout, then install and restart."
                                     .into();
@@ -1069,10 +1055,12 @@ impl App {
                             self.update_status = "Starting download...".into();
                         }
                     }
-                    if let Some((path, digest)) = &self.staged_update
+                    if self.staged_update.is_some()
                         && design::primary(ui, "Install and restart",
                             !self.dirty && !self.worker.foreground_busy() && !self.network.is_busy()).clicked() {
-                        self.installing = self.network.submit(Task::Install(path.clone(), digest.clone()));
+                        if let Some(prepared) = self.staged_update.take() {
+                            self.installing = self.network.submit(Task::Install(prepared));
+                        }
                         self.update_status = "Preparing to restart...".into();
                     }
                     if self.downloading && ui.button("Cancel download").clicked() {

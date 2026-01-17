@@ -36,8 +36,8 @@ pub enum Task {
     Print(Project),
     Settings(settings::Settings),
     CheckUpdate,
-    Download(updater::Update),
-    Install(PathBuf, String),
+    Download(Box<updater::Update>),
+    Install(updater::Prepared),
 }
 pub enum Outcome {
     Imported(Vec<(Page, RgbImage)>),
@@ -46,8 +46,8 @@ pub enum Outcome {
     Thumbnail { page: Page, image: RgbImage },
     Message(String),
     Cancelled,
-    Checked(Option<updater::Update>),
-    Downloaded(PathBuf, String),
+    Checked(Option<Box<updater::Update>>),
+    Downloaded(updater::Prepared),
     Restart,
 }
 pub enum Event {
@@ -318,19 +318,16 @@ fn run(
             settings::save(&settings)?;
             Ok(Outcome::Message("Settings saved".into()))
         }
-        Task::CheckUpdate => Ok(Outcome::Checked(updater::check()?)),
-        Task::Install(path, digest) => {
-            updater::launch_install(&path, &digest)?;
+        Task::CheckUpdate => Ok(Outcome::Checked(updater::check()?.map(Box::new))),
+        Task::Install(mut prepared) => {
+            updater::launch_install(&mut prepared)?;
             Ok(Outcome::Restart)
         }
         Task::Download(update) => {
             let path = updater::download(&update, cancel, |i, n| {
                 progress("Downloading verified update".into(), i as f32 / n as f32)
             })?;
-            Ok(Outcome::Downloaded(
-                path,
-                update.asset.digest.context("Missing update digest")?,
-            ))
+            Ok(Outcome::Downloaded(path))
         }
     }
 }
