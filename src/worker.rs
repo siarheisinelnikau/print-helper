@@ -1,3 +1,4 @@
+use crate::i18n::Message;
 use crate::software::BackgroundWake;
 use crate::{
     dialogs,
@@ -44,14 +45,14 @@ pub enum Outcome {
     Opened(Project, Vec<RgbImage>),
     Preview { revision: u64, image: RgbImage },
     Thumbnail { page: Page, image: RgbImage },
-    Message(String),
+    Message(Message),
     Cancelled,
     Checked(Option<Box<updater::Update>>),
     Downloaded(updater::Prepared),
     Restart,
 }
 pub enum Event {
-    Progress(String, f32),
+    Progress(Message, f32),
     Finished(std::result::Result<Outcome, String>),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,7 +85,7 @@ impl Worker {
             };
             let mut catalog = Catalog::new();
             while let Ok(task) = tasks.recv() {
-                let progress = |message: String, ratio: f32| {
+                let progress = |message: Message, ratio: f32| {
                     let _ = events.try_send(Event::Progress(message, ratio));
                     wake.notify();
                 };
@@ -176,14 +177,20 @@ fn thumbnails(
     pages: &[Page],
     catalog: &Catalog,
     cancel: &AtomicBool,
-    progress: &impl Fn(String, f32),
+    progress: &impl Fn(Message, f32),
 ) -> Result<Vec<RgbImage>> {
     let mut images = Vec::new();
     for (i, page) in pages.iter().enumerate() {
         ensure!(!cancel.load(Ordering::Relaxed), "Import cancelled");
         images.push(thumb(page, catalog)?);
         progress(
-            format!("Preparing page {} of {}", i + 1, pages.len()),
+            Message::new(
+                "Preparing page {number} of {count}",
+                &[
+                    ("number", (i + 1).to_string()),
+                    ("count", pages.len().to_string()),
+                ],
+            ),
             (i + 1) as f32 / pages.len() as f32,
         );
     }
@@ -194,7 +201,7 @@ fn import_paths(
     paths: &[PathBuf],
     catalog: &mut Catalog,
     cancel: &AtomicBool,
-    progress: &impl Fn(String, f32),
+    progress: &impl Fn(Message, f32),
 ) -> Result<Outcome> {
     ensure!(!paths.is_empty(), "No local files were provided");
     ensure!(
@@ -218,7 +225,7 @@ fn run(
     task: Task,
     catalog: &mut Catalog,
     cancel: &AtomicBool,
-    progress: impl Fn(String, f32),
+    progress: impl Fn(Message, f32),
 ) -> Result<Outcome> {
     match task {
         Task::Clear => {
@@ -275,7 +282,10 @@ fn run(
                 return Ok(Outcome::Cancelled);
             };
             output::save_new(&path, &serde_json::to_vec_pretty(&project)?)?;
-            Ok(Outcome::Message(format!("Saved {}", path.display())))
+            Ok(Outcome::Message(Message::new(
+                "Saved {path}",
+                &[("path", path.display().to_string())],
+            )))
         }
         Task::Preview {
             project,
@@ -296,9 +306,18 @@ fn run(
                 return Ok(Outcome::Cancelled);
             };
             output::export(&project, catalog, &path, cancel, |i, n| {
-                progress(format!("Exporting sheet {i} of {n}"), i as f32 / n as f32)
+                progress(
+                    Message::new(
+                        "Exporting sheet {number} of {count}",
+                        &[("number", i.to_string()), ("count", n.to_string())],
+                    ),
+                    i as f32 / n as f32,
+                )
             })?;
-            Ok(Outcome::Message(format!("Exported {}", path.display())))
+            Ok(Outcome::Message(Message::new(
+                "Exported {path}",
+                &[("path", path.display().to_string())],
+            )))
         }
         Task::Print(project) => {
             #[cfg(windows)]
@@ -306,7 +325,15 @@ fn run(
                 &project,
                 catalog,
                 cancel,
-                |i, n| progress(format!("Printing sheet {i} of {n}"), i as f32 / n as f32),
+                |i, n| {
+                    progress(
+                        Message::new(
+                            "Printing sheet {number} of {count}",
+                            &[("number", i.to_string()), ("count", n.to_string())],
+                        ),
+                        i as f32 / n as f32,
+                    )
+                },
             )?));
             #[cfg(not(windows))]
             {
@@ -479,7 +506,7 @@ mod tests {
         };
         let cancel = AtomicBool::new(false);
         let no_progress =
-            |_: String, _: f32| panic!("Background render must not show task progress");
+            |_: Message, _: f32| panic!("Background render must not show task progress");
         let result = run(
             Task::Preview {
                 project,
