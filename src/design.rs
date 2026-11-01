@@ -386,7 +386,7 @@ pub enum PreviewState {
 /// One stable row: background completion must not resize or move the sheet.
 pub fn preview_status(ui: &mut egui::Ui, pages: usize, sheets: usize, state: PreviewState) -> bool {
     let summary = Message::new(
-        "{pages} page(s) on {sheets} sheet(s)",
+        "Pages: {pages} · Sheets: {sheets}",
         &[("pages", pages.to_string()), ("sheets", sheets.to_string())],
     )
     .translated();
@@ -473,19 +473,25 @@ mod tests {
             });
             channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722
         }
-        for (foreground, background) in [
-            (INK, SURFACE),
-            (SECONDARY, PANEL),
-            (SECONDARY, CANVAS),
-            (SURFACE, ACCENT),
-            (INK, SELECTED),
-            (ACCENT, SELECTED),
-            (ERROR, SURFACE),
-            (ERROR, CANVAS),
-        ] {
-            let (a, b) = (luminance(foreground), luminance(background));
-            let ratio = (a.max(b) + 0.05) / (a.min(b) + 0.05);
-            assert!(ratio >= 4.5, "Small-text contrast is {ratio:.2}:1");
+        for theme in [Theme::Light, Theme::Dark] {
+            let palette = Palette::for_theme(theme);
+            for (foreground, background) in [
+                (palette.ink, palette.surface),
+                (palette.secondary, palette.panel),
+                (palette.secondary, palette.canvas),
+                (Color32::WHITE, ACCENT),
+                (palette.ink, palette.selected),
+                (palette.accent, palette.selected),
+                (palette.error, palette.surface),
+                (palette.error, palette.canvas),
+            ] {
+                let (a, b) = (luminance(foreground), luminance(background));
+                let ratio = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+                assert!(
+                    ratio >= 4.5,
+                    "{theme:?} small-text contrast is {ratio:.2}:1"
+                );
+            }
         }
     }
 

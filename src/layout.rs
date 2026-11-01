@@ -1,3 +1,4 @@
+use crate::i18n::tr;
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -72,7 +73,7 @@ impl Page {
                 && self.height_pt.is_finite()
                 && self.width_pt > 0.0
                 && self.height_pt > 0.0,
-            "Invalid page dimensions"
+            tr("Invalid page dimensions")
         );
         ensure!(
             self.crop
@@ -80,9 +81,9 @@ impl Page {
                 .all(|x| x.is_finite() && *x >= 0.0 && *x <= 0.45)
                 && self.crop[0] + self.crop[2] < 0.95
                 && self.crop[1] + self.crop[3] < 0.95,
-            "Crop must leave a visible page (each edge: 0–45%)"
+            tr("Crop must leave a visible page (each edge: 0–45%)")
         );
-        ensure!(self.quarter_turns < 4, "Invalid rotation");
+        ensure!(self.quarter_turns < 4, tr("Invalid rotation"));
         Ok(())
     }
     pub fn visible_size(&self) -> (f64, f64) {
@@ -112,21 +113,21 @@ impl Layout {
     pub fn validate(&self) -> Result<()> {
         ensure!(
             [1, 2, 4].contains(&self.per_sheet),
-            "Choose 1, 2 or 4 pages per sheet"
+            tr("Choose 1, 2 or 4 pages per sheet")
         );
-        ensure!([150, 300].contains(&self.dpi), "Choose 150 or 300 DPI");
+        ensure!([150, 300].contains(&self.dpi), tr("Choose 150 or 300 DPI"));
         ensure!(
             self.margin_mm.is_finite() && (0.0..=50.0).contains(&self.margin_mm),
-            "Invalid margin"
+            tr("Invalid margin")
         );
         ensure!(
             self.gap_mm.is_finite() && (0.0..=20.0).contains(&self.gap_mm),
-            "Invalid gap"
+            tr("Invalid gap")
         );
         let (w, h) = self.paper_pt();
         ensure!(
             w.min(h) > (2.0 * self.margin_mm + self.gap_mm) * PT_PER_MM + 10.0,
-            "Margins and gap leave no printable area"
+            tr("Margins and gap leave no printable area")
         );
         Ok(())
     }
@@ -160,10 +161,10 @@ impl Layout {
 
 impl Project {
     pub fn validate(&self) -> Result<()> {
-        ensure!(self.format_version == 1, "Unsupported project format");
+        ensure!(self.format_version == 1, tr("Unsupported project format"));
         ensure!(
             self.pages.len() <= 500,
-            "A project can contain at most 500 pages"
+            tr("A project can contain at most 500 pages")
         );
         self.layout.validate()?;
         for p in &self.pages {

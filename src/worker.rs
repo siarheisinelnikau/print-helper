@@ -1,4 +1,4 @@
-use crate::i18n::Message;
+use crate::i18n::{Message, tr};
 use crate::software::BackgroundWake;
 use crate::{
     dialogs,
@@ -181,7 +181,7 @@ fn thumbnails(
 ) -> Result<Vec<RgbImage>> {
     let mut images = Vec::new();
     for (i, page) in pages.iter().enumerate() {
-        ensure!(!cancel.load(Ordering::Relaxed), "Import cancelled");
+        ensure!(!cancel.load(Ordering::Relaxed), tr("Import cancelled"));
         images.push(thumb(page, catalog)?);
         progress(
             Message::new(
@@ -203,20 +203,20 @@ fn import_paths(
     cancel: &AtomicBool,
     progress: &impl Fn(Message, f32),
 ) -> Result<Outcome> {
-    ensure!(!paths.is_empty(), "No local files were provided");
+    ensure!(!paths.is_empty(), tr("No local files were provided"));
     ensure!(
         existing <= 500 && paths.len() <= 500 - existing,
-        "Project would exceed 500 pages"
+        tr("Project would exceed 500 pages")
     );
-    ensure!(!cancel.load(Ordering::Relaxed), "Import cancelled");
+    ensure!(!cancel.load(Ordering::Relaxed), tr("Import cancelled"));
     let mut pending = catalog.clone();
     let pages = document::import(paths, &mut pending)?;
     ensure!(
         pages.len() <= 500 - existing,
-        "Project would exceed 500 pages"
+        tr("Project would exceed 500 pages")
     );
     let images = thumbnails(&pages, &pending, cancel, progress)?;
-    ensure!(!cancel.load(Ordering::Relaxed), "Import cancelled");
+    ensure!(!cancel.load(Ordering::Relaxed), tr("Import cancelled"));
     *catalog = pending;
     Ok(Outcome::Imported(pages.into_iter().zip(images).collect()))
 }
@@ -247,7 +247,7 @@ fn run(
             };
             ensure!(
                 std::fs::metadata(&path)?.len() < 2_000_000,
-                "Project file exceeds 2 MB"
+                tr("Project file exceeds 2 MB")
             );
             let mut project: Project = serde_json::from_slice(&std::fs::read(&path)?)?;
             project.validate()?;
@@ -259,16 +259,19 @@ fn run(
                         .context("Missing project directory")?
                         .join(&page.path);
                 }
-                page.path = page
-                    .path
-                    .canonicalize()
-                    .with_context(|| format!("Locate {}", page.path.display()))?;
+                page.path = page.path.canonicalize().with_context(|| {
+                    Message::new(
+                        "Locate {path}",
+                        &[("path", page.path.display().to_string())],
+                    )
+                    .translated()
+                })?;
                 if !pending.contains_key(&page.path) {
                     pending.insert(page.path.clone(), Arc::new(document::load(&page.path)?));
                 }
                 ensure!(
                     pending.values().map(|s| s.cost).sum::<u64>() <= 256 * 1024 * 1024,
-                    "Project exceeds 256 MiB input budget"
+                    tr("Project exceeds 256 MiB input budget")
                 );
                 document::verify_page(page, &pending[&page.path])?;
             }
@@ -338,7 +341,7 @@ fn run(
             #[cfg(not(windows))]
             {
                 let _ = project;
-                anyhow::bail!("Printing requires Windows");
+                anyhow::bail!(tr("Printing requires Windows"));
             }
         }
         Task::Settings(settings) => {

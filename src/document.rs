@@ -1,3 +1,4 @@
+use crate::i18n::{Message, tr};
 use crate::layout::Page;
 use anyhow::{Context, Result, ensure};
 use image::{DynamicImage, ImageDecoder, ImageReader, RgbImage};
@@ -29,25 +30,27 @@ enum SourceData {
 pub type Catalog = HashMap<PathBuf, Arc<Source>>;
 
 pub fn load(path: &Path) -> Result<Source> {
-    let file = std::fs::File::open(path).with_context(|| format!("Read {}", path.display()))?;
+    let file = std::fs::File::open(path).with_context(|| {
+        Message::new("Read {path}", &[("path", path.display().to_string())]).translated()
+    })?;
     let metadata = file.metadata()?;
     ensure!(
         metadata.is_file() && metadata.len() <= MAX_FILE,
-        "Input must be a regular file up to 64 MiB"
+        tr("Input must be a regular file up to 64 MiB")
     );
     // Bound the read itself: a document may grow after its metadata was checked.
     let mut bytes = Vec::new();
     file.take(MAX_FILE + 1).read_to_end(&mut bytes)?;
-    ensure!(bytes.len() as u64 <= MAX_FILE, "Input exceeds 64 MiB");
+    ensure!(bytes.len() as u64 <= MAX_FILE, tr("Input exceeds 64 MiB"));
     let digest = format!("{:x}", Sha256::digest(&bytes));
     if bytes.starts_with(b"%PDF-") {
         #[cfg(windows)]
         {
-            let doc = pdf::load(&bytes).context(
+            let doc = pdf::load(&bytes).context(tr(
                 "Windows could not open this PDF (encrypted or unsupported PDFs are not supported)",
-            )?;
+            ))?;
             let n = doc.PageCount()?;
-            ensure!(n > 0 && n <= 500, "PDF must have 1–500 pages");
+            ensure!(n > 0 && n <= 500, tr("PDF must have 1–500 pages"));
             let mut sizes = Vec::new();
             for i in 0..n {
                 let p = doc.GetPage(i)?;
@@ -63,14 +66,14 @@ pub fn load(path: &Path) -> Result<Source> {
             })
         }
         #[cfg(not(windows))]
-        anyhow::bail!("PDF import requires Windows 10 or later");
+        anyhow::bail!(tr("PDF import requires Windows 10 or later"));
     } else {
         let reader = ImageReader::new(Cursor::new(&bytes)).with_guessed_format()?;
         let mut decoder = reader.into_decoder()?;
         let (w, h) = decoder.dimensions();
         ensure!(
             w as u64 * h as u64 <= MAX_PIXELS,
-            "Image exceeds 32 megapixels"
+            tr("Image exceeds 32 megapixels")
         );
         let orientation = decoder.orientation()?;
         let mut decoded = DynamicImage::from_decoder(decoder)?;
@@ -97,13 +100,13 @@ pub fn import(paths: &[PathBuf], catalog: &mut Catalog) -> Result<Vec<Page>> {
     let mut pages = Vec::new();
     let mut pending = catalog.clone();
     for path in paths {
-        let path = path.canonicalize().context("Locate input document")?;
+        let path = path.canonicalize().context(tr("Locate input document"))?;
         if !pending.contains_key(&path) {
             pending.insert(path.clone(), Arc::new(load(&path)?));
         }
         ensure!(
             pending.values().map(|s| s.cost).sum::<u64>() <= MAX_TOTAL,
-            "Project input budget exceeds 256 MiB; use a smaller batch"
+            tr("Project input budget exceeds 256 MiB; use a smaller batch")
         );
         let s = &pending[&path];
         for (i, &(width_pt, height_pt)) in s.sizes.iter().enumerate() {
@@ -117,7 +120,7 @@ pub fn import(paths: &[PathBuf], catalog: &mut Catalog) -> Result<Vec<Page>> {
                 quarter_turns: 0,
             });
         }
-        ensure!(pages.len() <= 500, "Import exceeds 500 pages");
+        ensure!(pages.len() <= 500, tr("Import exceeds 500 pages"));
     }
     *catalog = pending;
     Ok(pages)
@@ -127,16 +130,19 @@ pub fn verify_page(page: &Page, source: &Source) -> Result<()> {
     page.validate()?;
     ensure!(
         source.digest == page.sha256,
-        "Source has changed: {}",
-        page.path.display()
+        Message::new(
+            "Source has changed: {path}",
+            &[("path", page.path.display().to_string())]
+        )
+        .translated()
     );
     let size = source
         .sizes
         .get(page.source_page as usize)
-        .context("Source page no longer exists")?;
+        .context(tr("Source page no longer exists"))?;
     ensure!(
         (size.0 - page.width_pt).abs() < 0.01 && (size.1 - page.height_pt).abs() < 0.01,
-        "Source dimensions differ from saved project"
+        tr("Source dimensions differ from saved project")
     );
     Ok(())
 }
@@ -144,11 +150,11 @@ pub fn verify_page(page: &Page, source: &Source) -> Result<()> {
 pub fn render(page: &Page, catalog: &Catalog, target: (u32, u32), gray: bool) -> Result<RgbImage> {
     let source = catalog
         .get(&page.path)
-        .context("Source document is not loaded")?;
+        .context(tr("Source document is not loaded"))?;
     verify_page(page, source)?;
     ensure!(
         target.0 > 0 && target.1 > 0 && target.0 as u64 * target.1 as u64 <= MAX_PIXELS,
-        "Page output must contain 1–32 million pixels"
+        tr("Page output must contain 1–32 million pixels")
     );
     let cropped = match &source.data {
         // Crop original pixels before any filtering. Resizing the whole source first
@@ -203,7 +209,7 @@ fn crop_pixels(image: &RgbImage, crop: [f64; 4]) -> Result<RgbImage> {
     let y = snap(crop[1] * h as f64).floor() as u32;
     let right = snap((1.0 - crop[2]) * w as f64).ceil().min(w as f64) as u32;
     let bottom = snap((1.0 - crop[3]) * h as f64).ceil().min(h as f64) as u32;
-    ensure!(right > x && bottom > y, "Crop leaves no pixels");
+    ensure!(right > x && bottom > y, tr("Crop leaves no pixels"));
     Ok(image::imageops::crop_imm(image, x, y, right - x, bottom - y).to_image())
 }
 
@@ -228,7 +234,7 @@ pub mod pdf {
     pub fn render(doc: &PdfDocument, index: u32, w: u32, h: u32) -> Result<RgbImage> {
         ensure!(
             w > 0 && h > 0 && w as u64 * h as u64 <= MAX_PIXELS,
-            "Page render exceeds 32 megapixels; reduce DPI or crop"
+            tr("Page render exceeds 32 megapixels; reduce DPI or crop")
         );
         let page = doc.GetPage(index)?;
         let result = (|| {
@@ -239,10 +245,10 @@ pub mod pdf {
             page.RenderWithOptionsToStreamAsync(&stream, &options)?
                 .join()?;
             let len = stream.Size()?;
-            ensure!(len <= MAX_FILE, "Encoded PDF page is too large");
+            ensure!(len <= MAX_FILE, tr("Encoded PDF page is too large"));
             let reader = DataReader::CreateDataReader(&stream.GetInputStreamAt(0)?)?;
             let n = reader.LoadAsync(len as u32)?.join()?;
-            ensure!(n as u64 == len, "Incomplete PDF render stream");
+            ensure!(n as u64 == len, tr("Incomplete PDF render stream"));
             let mut bytes = vec![0; n as usize];
             reader.ReadBytes(&mut bytes)?;
             Ok(image::load_from_memory(&bytes)?.into_rgb8())

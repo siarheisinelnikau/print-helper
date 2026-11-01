@@ -1,4 +1,5 @@
 use crate::i18n::Language;
+use crate::i18n::tr;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -28,31 +29,6 @@ impl Default for Settings {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn old_settings_keep_update_preferences_and_gain_english_light_defaults() {
-        let old: Settings = serde_json::from_str(r#"{"startup_updates":false}"#).unwrap();
-        assert!(!old.startup_updates);
-        assert_eq!(old.language, Language::English);
-        assert_eq!(old.theme, Theme::Light);
-        for language in Language::ALL {
-            for theme in [Theme::Light, Theme::Dark] {
-                let settings = Settings {
-                    language,
-                    theme,
-                    ..old.clone()
-                };
-                let restored: Settings =
-                    serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
-                assert_eq!(restored.language, language);
-                assert_eq!(restored.theme, theme);
-                assert!(!restored.startup_updates);
-            }
-        }
-    }
-}
 pub fn path() -> PathBuf {
     std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
@@ -62,8 +38,9 @@ pub fn path() -> PathBuf {
 }
 pub fn load() -> Result<Settings> {
     match std::fs::read(path()) {
-        Ok(bytes) => Ok(serde_json::from_slice(&bytes)
-            .context("Settings are unreadable; startup update checks were skipped")?),
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes).context(tr(
+            "Settings are unreadable; startup update checks were skipped",
+        ))?),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
         Err(e) => Err(e.into()),
     }
@@ -98,4 +75,30 @@ pub fn save(settings: &Settings) -> Result<()> {
     #[cfg(not(windows))]
     std::fs::rename(&temp.path, path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn old_settings_keep_update_preferences_and_gain_english_light_defaults() {
+        let old: Settings = serde_json::from_str(r#"{"startup_updates":false}"#).unwrap();
+        assert!(!old.startup_updates);
+        assert_eq!(old.language, Language::English);
+        assert_eq!(old.theme, Theme::Light);
+        for language in Language::ALL {
+            for theme in [Theme::Light, Theme::Dark] {
+                let settings = Settings {
+                    language,
+                    theme,
+                    ..old.clone()
+                };
+                let restored: Settings =
+                    serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+                assert_eq!(restored.language, language);
+                assert_eq!(restored.theme, theme);
+                assert!(!restored.startup_updates);
+            }
+        }
+    }
 }
