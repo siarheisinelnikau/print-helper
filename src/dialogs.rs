@@ -1,4 +1,5 @@
 //! Synchronous native file pickers isolated from the document worker's MTA.
+use crate::i18n::tr;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
@@ -46,7 +47,7 @@ pub fn pick_inputs() -> Result<Option<Vec<PathBuf>>> {
     on_dialog_thread(|| {
         Ok(rfd::FileDialog::new()
             .add_filter(
-                "PDF and images",
+                tr("PDF and images"),
                 &["pdf", "png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp"],
             )
             .pick_files())
@@ -55,14 +56,14 @@ pub fn pick_inputs() -> Result<Option<Vec<PathBuf>>> {
 pub fn open_layout() -> Result<Option<PathBuf>> {
     on_dialog_thread(|| {
         Ok(rfd::FileDialog::new()
-            .add_filter("PrintHelper project", &["phlayout"])
+            .add_filter(tr("PrintHelper project"), &["phlayout"])
             .pick_file())
     })
 }
 pub fn save_layout() -> Result<Option<PathBuf>> {
     on_dialog_thread(|| {
         Ok(rfd::FileDialog::new()
-            .add_filter("PrintHelper project", &["phlayout"])
+            .add_filter(tr("PrintHelper project"), &["phlayout"])
             .set_file_name("Layout.phlayout")
             .save_file())
     })
@@ -70,7 +71,7 @@ pub fn save_layout() -> Result<Option<PathBuf>> {
 pub fn export_pdf() -> Result<Option<PathBuf>> {
     on_dialog_thread(|| {
         Ok(rfd::FileDialog::new()
-            .add_filter("PDF document", &["pdf"])
+            .add_filter(tr("PDF document"), &["pdf"])
             .set_file_name("PrintHelper-output.pdf")
             .save_file())
     })

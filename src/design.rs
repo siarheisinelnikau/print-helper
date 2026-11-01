@@ -1,4 +1,8 @@
 use egui::{Color32, FontFamily, FontId, RichText, TextStyle, Vec2};
+use print_helper::{
+    i18n::{Message, tr},
+    settings::Theme,
+};
 
 pub const INK: Color32 = Color32::from_rgb(32, 39, 53);
 pub const SECONDARY: Color32 = Color32::from_rgb(88, 97, 116);
@@ -11,31 +15,88 @@ pub const BORDER: Color32 = Color32::from_rgb(210, 217, 228);
 pub const ERROR: Color32 = Color32::from_rgb(161, 43, 56);
 pub const PAGE_ROW_HEIGHT: f32 = 100.0;
 
-pub fn apply(ctx: &egui::Context) {
-    // Preserve the existing light design before native input reports the OS theme.
-    ctx.set_theme(egui::Theme::Light);
+#[derive(Clone, Copy)]
+pub struct Palette {
+    pub ink: Color32,
+    pub secondary: Color32,
+    pub accent: Color32,
+    pub surface: Color32,
+    pub panel: Color32,
+    pub canvas: Color32,
+    pub selected: Color32,
+    pub border: Color32,
+    pub error: Color32,
+}
+impl Palette {
+    pub fn for_theme(theme: Theme) -> Self {
+        if theme == Theme::Dark {
+            Self {
+                ink: Color32::from_rgb(233, 237, 245),
+                secondary: Color32::from_rgb(176, 187, 207),
+                accent: Color32::from_rgb(134, 177, 255),
+                surface: Color32::from_rgb(29, 35, 46),
+                panel: Color32::from_rgb(25, 30, 40),
+                canvas: Color32::from_rgb(18, 23, 32),
+                selected: Color32::from_rgb(39, 57, 85),
+                border: Color32::from_rgb(72, 83, 103),
+                error: Color32::from_rgb(255, 148, 160),
+            }
+        } else {
+            Self {
+                ink: INK,
+                secondary: SECONDARY,
+                accent: ACCENT,
+                surface: SURFACE,
+                panel: PANEL,
+                canvas: CANVAS,
+                selected: SELECTED,
+                border: BORDER,
+                error: ERROR,
+            }
+        }
+    }
+}
+pub fn colors(ctx: &egui::Context) -> Palette {
+    Palette::for_theme(if ctx.style().visuals.dark_mode {
+        Theme::Dark
+    } else {
+        Theme::Light
+    })
+}
+
+pub fn apply(ctx: &egui::Context, theme: Theme) {
+    let palette = Palette::for_theme(theme);
+    ctx.set_theme(if theme == Theme::Dark {
+        egui::Theme::Dark
+    } else {
+        egui::Theme::Light
+    });
     let mut style = (*ctx.style()).clone();
-    style.visuals = egui::Visuals::light();
-    style.visuals.override_text_color = Some(INK);
-    style.visuals.panel_fill = PANEL;
-    style.visuals.window_fill = SURFACE;
-    style.visuals.hyperlink_color = ACCENT;
-    style.visuals.error_fg_color = ERROR;
-    style.visuals.faint_bg_color = CANVAS;
-    style.visuals.selection.bg_fill = SELECTED;
-    style.visuals.selection.stroke = egui::Stroke::new(1.5, ACCENT);
-    style.visuals.window_stroke = egui::Stroke::new(1.0, BORDER);
+    style.visuals = if theme == Theme::Dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
+    style.visuals.override_text_color = Some(palette.ink);
+    style.visuals.panel_fill = palette.panel;
+    style.visuals.window_fill = palette.surface;
+    style.visuals.hyperlink_color = palette.accent;
+    style.visuals.error_fg_color = palette.error;
+    style.visuals.faint_bg_color = palette.canvas;
+    style.visuals.selection.bg_fill = palette.selected;
+    style.visuals.selection.stroke = egui::Stroke::new(1.5, palette.accent);
+    style.visuals.window_stroke = egui::Stroke::new(1.0, palette.border);
     style.visuals.window_corner_radius = egui::CornerRadius::same(10);
-    style.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, BORDER);
-    style.visuals.widgets.inactive.bg_fill = SURFACE;
-    style.visuals.widgets.inactive.weak_bg_fill = SURFACE;
-    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, BORDER);
-    style.visuals.widgets.hovered.bg_fill = SELECTED;
-    style.visuals.widgets.hovered.weak_bg_fill = SELECTED;
-    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, ACCENT);
-    style.visuals.widgets.active.bg_fill = SELECTED;
-    style.visuals.widgets.active.weak_bg_fill = SELECTED;
-    style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.5, ACCENT);
+    style.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, palette.border);
+    style.visuals.widgets.inactive.bg_fill = palette.surface;
+    style.visuals.widgets.inactive.weak_bg_fill = palette.surface;
+    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, palette.border);
+    style.visuals.widgets.hovered.bg_fill = palette.selected;
+    style.visuals.widgets.hovered.weak_bg_fill = palette.selected;
+    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, palette.accent);
+    style.visuals.widgets.active.bg_fill = palette.selected;
+    style.visuals.widgets.active.weak_bg_fill = palette.selected;
+    style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.5, palette.accent);
     style.spacing.item_spacing = Vec2::new(8.0, 8.0);
     style.spacing.button_padding = Vec2::new(10.0, 7.0);
     style.spacing.interact_size.y = 34.0;
@@ -62,8 +123,8 @@ pub fn primary(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response 
     }
     ui.scope(|ui| {
         let widgets = &mut ui.style_mut().visuals.widgets;
-        widgets.inactive.weak_bg_fill = ACCENT;
-        widgets.inactive.bg_fill = ACCENT;
+        widgets.inactive.weak_bg_fill = Color32::from_rgb(36, 86, 198);
+        widgets.inactive.bg_fill = Color32::from_rgb(36, 86, 198);
         widgets.inactive.bg_stroke = egui::Stroke::NONE;
         widgets.hovered.weak_bg_fill = Color32::from_rgb(28, 70, 170);
         widgets.hovered.bg_fill = widgets.hovered.weak_bg_fill;
@@ -71,7 +132,7 @@ pub fn primary(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response 
         widgets.active = widgets.hovered;
         ui.add_enabled(
             enabled,
-            egui::Button::new(RichText::new(label).color(SURFACE).strong())
+            egui::Button::new(RichText::new(label).color(Color32::WHITE).strong())
                 .min_size(Vec2::new(112.0, 36.0)),
         )
     })
@@ -79,7 +140,7 @@ pub fn primary(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response 
 }
 
 pub fn help(ui: &mut egui::Ui, text: impl Into<RichText>) -> egui::Response {
-    ui.colored_label(SECONDARY, text)
+    ui.colored_label(colors(ui.ctx()).secondary, text)
 }
 
 pub fn section_label(ui: &mut egui::Ui, text: &str) {
@@ -111,20 +172,25 @@ pub fn page_card(
     ui.painter().rect(
         rect,
         7.0,
-        if selected { SELECTED } else { SURFACE },
+        if selected {
+            colors(ui.ctx()).selected
+        } else {
+            colors(ui.ctx()).surface
+        },
         egui::Stroke::new(
             if emphasized { 2.0 } else { 1.0 },
             if emphasized || response.hovered() {
-                ACCENT
+                colors(ui.ctx()).accent
             } else {
-                BORDER
+                colors(ui.ctx()).border
             },
         ),
         egui::StrokeKind::Inside,
     );
     let paper =
         egui::Rect::from_min_size(rect.min + egui::vec2(10.0, 12.0), egui::vec2(54.0, 76.0));
-    ui.painter().rect_filled(paper, 2.0, CANVAS);
+    ui.painter()
+        .rect_filled(paper, 2.0, colors(ui.ctx()).canvas);
     if let Some(texture) = texture {
         let size = texture.size_vec2();
         let scale = (paper.width() / size.x).min(paper.height() / size.y);
@@ -138,7 +204,7 @@ pub fn page_card(
             egui::Align2::CENTER_CENTER,
             "...",
             FontId::proportional(15.0),
-            SECONDARY,
+            colors(ui.ctx()).secondary,
         );
     }
     let mut labels = ui.new_child(
@@ -151,13 +217,19 @@ pub fn page_card(
     );
     // Text selection must not intercept clicks intended for the page card.
     labels.add(
-        egui::Label::new(RichText::new(format!("Page {}", index + 1)).strong()).selectable(false),
+        egui::Label::new(
+            RichText::new(
+                Message::new("Page {number}", &[("number", (index + 1).to_string())]).translated(),
+            )
+            .strong(),
+        )
+        .selectable(false),
     );
     labels.add(
         egui::Label::new(
             RichText::new(page.path.file_name().unwrap_or_default().to_string_lossy())
                 .small()
-                .color(SECONDARY),
+                .color(colors(ui.ctx()).secondary),
         )
         .truncate()
         .selectable(false),
@@ -170,13 +242,17 @@ pub fn page_card(
                     .extension()
                     .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
                 {
-                    format!("Source page {}", page.source_page + 1)
+                    Message::new(
+                        "Source page {number}",
+                        &[("number", (page.source_page + 1).to_string())],
+                    )
+                    .translated()
                 } else {
-                    "Image".into()
+                    tr("Image").into()
                 },
             )
             .small()
-            .color(SECONDARY),
+            .color(colors(ui.ctx()).secondary),
         )
         .truncate()
         .selectable(false),
@@ -186,7 +262,14 @@ pub fn page_card(
             egui::WidgetType::SelectableLabel,
             ui.is_enabled(),
             selected,
-            format!("Page {}: {}", index + 1, page.path.display()),
+            Message::new(
+                "Page {number}: {path}",
+                &[
+                    ("number", (index + 1).to_string()),
+                    ("path", page.path.display().to_string()),
+                ],
+            )
+            .translated(),
         )
     });
     if !response.dragged() {
@@ -267,13 +350,17 @@ pub fn sheet_stage(
         ui.painter().rect_filled(
             paper.translate(egui::vec2(0.0, 3.0)).expand(2.0),
             1.0,
-            Color32::from_rgb(216, 222, 232),
+            if ui.visuals().dark_mode {
+                Color32::BLACK
+            } else {
+                Color32::from_rgb(216, 222, 232)
+            },
         );
         egui::Image::new(texture).paint_at(ui, paper);
         ui.painter().rect_stroke(
             paper,
             0.0,
-            egui::Stroke::new(1.0, BORDER),
+            egui::Stroke::new(1.0, colors(ui.ctx()).border),
             egui::StrokeKind::Outside,
         );
         paper
@@ -283,7 +370,7 @@ pub fn sheet_stage(
             egui::Align2::CENTER_CENTER,
             placeholder,
             FontId::proportional(15.0),
-            SECONDARY,
+            colors(ui.ctx()).secondary,
         );
         stage
     }
@@ -298,20 +385,28 @@ pub enum PreviewState {
 
 /// One stable row: background completion must not resize or move the sheet.
 pub fn preview_status(ui: &mut egui::Ui, pages: usize, sheets: usize, state: PreviewState) -> bool {
-    let page_word = if pages == 1 { "page" } else { "pages" };
-    let sheet_word = if sheets == 1 { "sheet" } else { "sheets" };
-    let summary = format!("{pages} {page_word} on {sheets} {sheet_word}");
+    let summary = Message::new(
+        "{pages} page(s) on {sheets} sheet(s)",
+        &[("pages", pages.to_string()), ("sheets", sheets.to_string())],
+    )
+    .translated();
     let (text, color) = match state {
-        PreviewState::Ready => (summary, SECONDARY),
-        PreviewState::Updating => (format!("{summary} - Updating preview..."), SECONDARY),
-        PreviewState::Failed => (format!("{summary} - Preview unavailable"), ERROR),
+        PreviewState::Ready => (summary, colors(ui.ctx()).secondary),
+        PreviewState::Updating => (
+            Message::new("{summary} - Updating preview...", &[("summary", summary)]).translated(),
+            colors(ui.ctx()).secondary,
+        ),
+        PreviewState::Failed => (
+            Message::new("{summary} - Preview unavailable", &[("summary", summary)]).translated(),
+            colors(ui.ctx()).error,
+        ),
     };
     ui.allocate_ui_with_layout(
         Vec2::new(ui.available_width(), ui.spacing().interact_size.y),
         egui::Layout::right_to_left(egui::Align::Center),
         |ui| {
             let retry =
-                matches!(state, PreviewState::Failed) && ui.button("Retry preview").clicked();
+                matches!(state, PreviewState::Failed) && ui.button(tr("Retry preview")).clicked();
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.add(egui::Label::new(RichText::new(text).color(color)).truncate());
             });
@@ -397,7 +492,7 @@ mod tests {
     #[test]
     fn compact_page_card_keeps_bounds_and_accepts_clicks_with_long_filenames() {
         let ctx = egui::Context::default();
-        apply(&ctx);
+        apply(&ctx, Theme::Light);
         let page = print_helper::layout::Page {
             path: "A very long document filename that must fit in the page list.pdf".into(),
             sha256: "0".repeat(64),
@@ -472,7 +567,7 @@ mod tests {
         for scale in [1.0, 1.5, 2.0] {
             for width in [440.0, 700.0] {
                 let ctx = egui::Context::default();
-                apply(&ctx);
+                apply(&ctx, Theme::Light);
                 let sheet = ctx.load_texture(
                     "synthetic sheet",
                     ColorImage::filled([700, 1000], SURFACE),

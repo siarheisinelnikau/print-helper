@@ -1,5 +1,6 @@
 mod dialogs;
 pub mod document;
+pub mod i18n;
 pub mod layout;
 pub mod output;
 #[cfg(windows)]

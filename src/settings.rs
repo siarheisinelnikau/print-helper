@@ -1,16 +1,55 @@
+use crate::i18n::Language;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Theme {
+    #[default]
+    Light,
+    Dark,
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub startup_updates: bool,
+    pub language: Language,
+    pub theme: Theme,
 }
 impl Default for Settings {
     fn default() -> Self {
         Self {
             startup_updates: true,
+            language: Language::English,
+            theme: Theme::Light,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn old_settings_keep_update_preferences_and_gain_english_light_defaults() {
+        let old: Settings = serde_json::from_str(r#"{"startup_updates":false}"#).unwrap();
+        assert!(!old.startup_updates);
+        assert_eq!(old.language, Language::English);
+        assert_eq!(old.theme, Theme::Light);
+        for language in Language::ALL {
+            for theme in [Theme::Light, Theme::Dark] {
+                let settings = Settings {
+                    language,
+                    theme,
+                    ..old.clone()
+                };
+                let restored: Settings =
+                    serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+                assert_eq!(restored.language, language);
+                assert_eq!(restored.theme, theme);
+                assert!(!restored.startup_updates);
+            }
         }
     }
 }

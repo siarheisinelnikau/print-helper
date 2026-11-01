@@ -1,5 +1,5 @@
 //! Only invoked after the user presses Print and confirms the Windows print dialog.
-use crate::{document::Catalog, layout::Project, output::render_sheet};
+use crate::{document::Catalog, i18n::Message, layout::Project, output::render_sheet};
 use anyhow::{Result, bail, ensure};
 use std::sync::atomic::{AtomicBool, Ordering};
 use windows::{
@@ -29,7 +29,7 @@ pub fn print(
     catalog: &Catalog,
     cancel: &AtomicBool,
     mut progress: impl FnMut(usize, usize),
-) -> Result<String> {
+) -> Result<Message> {
     project.validate()?;
     ensure!(!project.pages.is_empty(), "Add pages before printing");
     let mut dialog = Dialog(PRINTDLGW {
