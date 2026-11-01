@@ -342,7 +342,7 @@ impl App {
             10.0,
             design::colors(ctx).panel.gamma_multiply(0.97),
             egui::Stroke::new(
-                2.0,
+                2.0_f32,
                 if blocked.is_some() {
                     design::colors(ctx).error
                 } else {
@@ -741,7 +741,7 @@ impl App {
                                     egui::pos2(output.inner_rect.left(), marker),
                                     egui::pos2(output.inner_rect.right(), marker),
                                 ],
-                                egui::Stroke::new(3.0, design::colors(ctx).accent),
+                                egui::Stroke::new(3.0_f32, design::colors(ctx).accent),
                             );
                             if ctx.input(|input| input.pointer.any_released()) {
                                 egui::DragAndDrop::clear_payload(ctx);

@@ -84,19 +84,19 @@ pub fn apply(ctx: &egui::Context, theme: Theme) {
     style.visuals.error_fg_color = palette.error;
     style.visuals.faint_bg_color = palette.canvas;
     style.visuals.selection.bg_fill = palette.selected;
-    style.visuals.selection.stroke = egui::Stroke::new(1.5, palette.accent);
-    style.visuals.window_stroke = egui::Stroke::new(1.0, palette.border);
+    style.visuals.selection.stroke = egui::Stroke::new(1.5_f32, palette.accent);
+    style.visuals.window_stroke = egui::Stroke::new(1.0_f32, palette.border);
     style.visuals.window_corner_radius = egui::CornerRadius::same(10);
-    style.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, palette.border);
+    style.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, palette.border);
     style.visuals.widgets.inactive.bg_fill = palette.surface;
     style.visuals.widgets.inactive.weak_bg_fill = palette.surface;
-    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, palette.border);
+    style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, palette.border);
     style.visuals.widgets.hovered.bg_fill = palette.selected;
     style.visuals.widgets.hovered.weak_bg_fill = palette.selected;
-    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, palette.accent);
+    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, palette.accent);
     style.visuals.widgets.active.bg_fill = palette.selected;
     style.visuals.widgets.active.weak_bg_fill = palette.selected;
-    style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.5, palette.accent);
+    style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.5_f32, palette.accent);
     style.spacing.item_spacing = Vec2::new(8.0, 8.0);
     style.spacing.button_padding = Vec2::new(10.0, 7.0);
     style.spacing.interact_size.y = 34.0;
@@ -178,7 +178,7 @@ pub fn page_card(
             colors(ui.ctx()).surface
         },
         egui::Stroke::new(
-            if emphasized { 2.0 } else { 1.0 },
+            if emphasized { 2.0_f32 } else { 1.0_f32 },
             if emphasized || response.hovered() {
                 colors(ui.ctx()).accent
             } else {
@@ -360,7 +360,7 @@ pub fn sheet_stage(
         ui.painter().rect_stroke(
             paper,
             0.0,
-            egui::Stroke::new(1.0, colors(ui.ctx()).border),
+            egui::Stroke::new(1.0_f32, colors(ui.ctx()).border),
             egui::StrokeKind::Outside,
         );
         paper
