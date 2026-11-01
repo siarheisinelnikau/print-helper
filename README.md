@@ -62,7 +62,7 @@ Set-Location E:\work\github\print-helper
 python ./scripts/inspect-pe.py ./dist/PrintHelper-v0.2.0.exe
 ```
 
-Omit `-Offline` on a machine that needs to resolve dependencies. Packaging produces `dist/PrintHelper-v0.2.0.exe` and `dist/SHA256SUMS.txt`, with license notices. It verifies that embedded product/file versions and original filename match the Cargo version, then inspects PE imports and icons without starting the application. CI uses this same version-derived packaging path and retains an artifact without creating a release.
+Omit `-Offline` on a machine that needs to resolve dependencies. Packaging produces `dist/PrintHelper-v0.2.0.exe` and `dist/SHA256SUMS.txt`, with license notices. It verifies that embedded product/file versions and original filename match the Cargo version, then inspects PE imports and icons without starting the application. CI uses this same version-derived packaging and inspection path.
 
 Increment the minor version for new capabilities and the patch version for fixes before delivering a changed build. `Cargo.toml` is the source for the installed-version UI, update client, executable resources and package name; update the lockfile, current documentation and release notes together. Packaging validates the version but does not increment it automatically. Local commits track source changes independently of application versions.
 

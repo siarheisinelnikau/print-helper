@@ -1,5 +1,20 @@
 # Validation record
 
+## Version 0.2.0 — localization and themes (2026-11-01)
+
+The localization release passed `cargo fmt --all -- --check`, `cargo clippy --locked --offline --all-targets -- -D warnings`, and `cargo test --locked --offline --all-targets`: **46 tests passed** (9 library, 13 UI/layout, 12 document/export, 7 software-rendering and 5 updater tests). Cargo ran through the shared bounded build gate, using this repository's target directory and at most two jobs. The incremental-cache hard-link warning is environmental; Cargo copied cache files and all checks succeeded.
+
+Each of the six catalogs contains 206 messages. New regressions verify matching catalog keys and named placeholders, single-pass substitution that preserves braces/Unicode in paths, retranslation of retained messages, old-settings migration and preference round trips. The real headless workspace components fit a 960×640 logical-point viewport at 150% native scale in English, Russian, French, German, Spanish and Italian, using both palettes and empty/page/Settings states. Contrast checks cover small text and selections in both themes. These geometry tests do not establish actual screenshot appearance, native input or subjective smoothness.
+
+The optimized build (`cargo build --locked --offline --release`) was copied to `dist/PrintHelper-v0.2.0.exe`: **7,840,768 bytes**, SHA-256 **834c0876a421fa7e680c054b105a02af8fbd1c5b4738e04f501dfbcda587d429**. Post-build packaging checks verified ProductVersion/FileVersion `0.2.0`, OriginalFilename `PrintHelper-v0.2.0.exe`, Windows GUI x64, GDI presentation imports, and all nine embedded icon sizes (16–256 pixels). The PE checker found no GPU-presentation or external MSVC runtime imports. `SHA256SUMS.txt`, LICENSE.txt and dependency notices accompany the executable. The binary was not executed.
+
+The software-backend dependency and icon-generator checks passed. Regenerating dependency notices now produces no Git diff; this also fixes the previously stale shared-updater repository/license entry checked by CI. A source string audit found that ordinary editing controls, settings/update actions, dialogs, file filters, help, status/progress and actionable validation errors use catalogs. Product names, file names/paths, document contents, internal identifiers and low-level technical diagnostics retain their original text. Native Windows dialog buttons follow the OS display language.
+
+Source review confirms that `design::apply` sets explicit egui Light/Dark preferences at startup and after user changes; OS theme input cannot override the saved choice. Theme/catalog work adds no timers, frame loop or UI-thread file IO. The unchanged host uses CPU rasterization with retained GDI presentation, Wait/WaitUntil scheduling and hidden/minimized/occluded suppression, covered by the existing policy tests. Actual process CPU, frame/presentation counts and visible/hidden/restore behavior remain **unmeasured**, so the runtime rendering gate is **incomplete**. Repository instructions prohibit GUI launches, file/print dialogs and screenshots during this task. Main-window and Settings screenshots for the new languages/themes remain pending; no mock images were created.
+
+## Historical version 0.1.3 record
+
+
 Latest validation: 2026-11-01. Scope: code-only development on Windows x64 with rustc 1.96.1 / Cargo 1.96.1. No application window, file dialog, print dialog, real printer, updater helper or browser UI was opened. The user's cropped preview screenshot and the generated icon artwork were inspected; no application capture was produced. All document inputs were generated inside repository-local `.test-output` directories. No real user documents or settings were modified.
 
 ## Automated checks
