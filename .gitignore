@@ -9,4 +9,5 @@
 *.log
 /.local/
 /.test-output/
+__pycache__/
 
