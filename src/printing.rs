@@ -1,4 +1,5 @@
 //! Only invoked after the user presses Print and confirms the Windows print dialog.
+use crate::i18n::tr;
 use crate::{document::Catalog, i18n::Message, layout::Project, output::render_sheet};
 use anyhow::{Result, bail, ensure};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,7 +32,7 @@ pub fn print(
     mut progress: impl FnMut(usize, usize),
 ) -> Result<Message> {
     project.validate()?;
-    ensure!(!project.pages.is_empty(), "Add pages before printing");
+    ensure!(!project.pages.is_empty(), tr("Add pages before printing"));
     let mut dialog = Dialog(PRINTDLGW {
         lStructSize: std::mem::size_of::<PRINTDLGW>() as u32,
         Flags: PD_RETURNDC
@@ -53,10 +54,13 @@ pub fn print(
             bail!("Windows print dialog failed (0x{:x})", code.0);
         }
         let dc = dialog.0.hDC;
-        ensure!(!dc.is_invalid(), "Printer did not return a drawing context");
+        ensure!(
+            !dc.is_invalid(),
+            tr("Printer did not return a drawing context")
+        );
         let cap = |index| GetDeviceCaps(Some(dc), index);
         let (dx, dy) = (cap(LOGPIXELSX), cap(LOGPIXELSY));
-        ensure!(dx > 0 && dy > 0, "Printer resolution is unavailable");
+        ensure!(dx > 0 && dy > 0, tr("Printer resolution is unavailable"));
         let (pw, ph) = (cap(PHYSICALWIDTH), cap(PHYSICALHEIGHT));
         let (ox, oy) = (cap(PHYSICALOFFSETX), cap(PHYSICALOFFSETY));
         let (rw, rh) = (cap(HORZRES), cap(VERTRES));
@@ -64,26 +68,28 @@ pub fn print(
         ensure!(
             (pw as f64 / dx as f64 * 72.0 - expected_w).abs() <= 6.0
                 && (ph as f64 / dy as f64 * 72.0 - expected_h).abs() <= 6.0,
-            "Printer paper size/orientation differs from the preview. Select matching paper and orientation in printer Properties, then retry"
+            tr(
+                "Printer paper size/orientation differs from the preview. Select matching paper and orientation in printer Properties, then retry"
+            )
         );
         let margin = project.layout.margin_mm / 25.4;
         ensure!(
             margin * dx as f64 + 1.0 >= ox.max(pw - ox - rw) as f64
                 && margin * dy as f64 + 1.0 >= oy.max(ph - oy - rh) as f64,
-            "The printer cannot print within these margins. Increase margins to avoid clipping"
+            tr("The printer cannot print within these margins. Increase margins to avoid clipping")
         );
         let info = DOCINFOW {
             cbSize: std::mem::size_of::<DOCINFOW>() as i32,
             lpszDocName: w!("PrintHelper layout"),
             ..Default::default()
         };
-        ensure!(StartDocW(dc, &info) > 0, "Printer rejected the job");
+        ensure!(StartDocW(dc, &info) > 0, tr("Printer rejected the job"));
         let result: Result<()> = (|| {
             let count = project.layout.sheet_count(project.pages.len());
             for s in 0..count {
                 ensure!(
                     !cancel.load(Ordering::Relaxed),
-                    "Printing cancelled; already printed sheets cannot be recalled"
+                    tr("Printing cancelled; already printed sheets cannot be recalled")
                 );
                 let image = render_sheet(project, catalog, s, project.layout.dpi as f64)?;
                 let (w, h) = image.dimensions();
@@ -103,7 +109,7 @@ pub fn print(
                     },
                     ..Default::default()
                 };
-                ensure!(StartPage(dc) > 0, "Cannot start printer page");
+                ensure!(StartPage(dc) > 0, tr("Cannot start printer page"));
                 SetStretchBltMode(dc, HALFTONE);
                 let scanlines = StretchDIBits(
                     dc,
@@ -120,11 +126,11 @@ pub fn print(
                     DIB_RGB_COLORS,
                     SRCCOPY,
                 );
-                ensure!(scanlines > 0, "Printer could not draw the sheet");
-                ensure!(EndPage(dc) > 0, "Cannot finish printer page");
+                ensure!(scanlines > 0, tr("Printer could not draw the sheet"));
+                ensure!(EndPage(dc) > 0, tr("Cannot finish printer page"));
                 progress(s + 1, count);
             }
-            ensure!(EndDoc(dc) > 0, "Printer could not finish the job");
+            ensure!(EndDoc(dc) > 0, tr("Printer could not finish the job"));
             Ok(())
         })();
         if result.is_err() {

@@ -1,5 +1,6 @@
 //! Explicit UI catalogs. Document contents, file paths and diagnostic details are never translated.
 use serde::{Deserialize, Serialize};
+use std::cell::Cell;
 use std::{
     collections::BTreeMap,
     sync::{
@@ -49,11 +50,18 @@ impl Language {
 }
 
 static LANGUAGE: AtomicU8 = AtomicU8::new(0);
+thread_local! {
+    // A UI context keeps its own choice while worker-created native dialogs use the process choice.
+    static UI_LANGUAGE: Cell<Option<Language>> = const { Cell::new(None) };
+}
 pub fn set_language(language: Language) {
     LANGUAGE.store(language as u8, Ordering::Relaxed);
+    UI_LANGUAGE.set(Some(language));
 }
 pub fn language() -> Language {
-    Language::ALL[usize::from(LANGUAGE.load(Ordering::Relaxed)).min(5)]
+    UI_LANGUAGE
+        .get()
+        .unwrap_or_else(|| Language::ALL[usize::from(LANGUAGE.load(Ordering::Relaxed)).min(5)])
 }
 pub fn tr(key: &str) -> &str {
     language().text(key)

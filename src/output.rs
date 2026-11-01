@@ -1,3 +1,4 @@
+use crate::i18n::tr;
 use crate::{
     document::{self, Catalog},
     layout::{Project, fit},
@@ -21,11 +22,11 @@ pub fn render_sheet(
     project.validate()?;
     ensure!(
         sheet < project.layout.sheet_count(project.pages.len()),
-        "Sheet is outside the project"
+        tr("Sheet is outside the project")
     );
     ensure!(
         dpi.is_finite() && (10.0..=300.0).contains(&dpi),
-        "Invalid render resolution"
+        tr("Invalid render resolution")
     );
     let (pw, ph) = project.layout.paper_pt();
     let scale = dpi / 72.0;
@@ -99,7 +100,7 @@ impl NewFile {
                 Err(e) => return Err(e.into()),
             }
         }
-        anyhow::bail!("Cannot allocate a temporary output")
+        anyhow::bail!(tr("Cannot allocate a temporary output"))
     }
     pub fn file(&mut self) -> Result<&mut std::fs::File> {
         self.file
@@ -125,11 +126,12 @@ impl NewFile {
             let from: Vec<u16> = self.path.as_os_str().encode_wide().chain(Some(0)).collect();
             let to: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
             unsafe { MoveFileExW(PCWSTR(from.as_ptr()), PCWSTR(to.as_ptr()), MOVEFILE_WRITE_THROUGH) }
-                .context("Cannot save output. Choose a new filename in a writable folder; existing files are never overwritten")?;
+                .context(tr("Cannot save output. Choose a new filename in a writable folder; existing files are never overwritten"))?;
         }
         #[cfg(not(windows))]
-        std::fs::hard_link(&self.path, target)
-            .context("Cannot save output without overwriting an existing file")?;
+        std::fs::hard_link(&self.path, target).context(tr(
+            "Cannot save output without overwriting an existing file",
+        ))?;
         Ok(())
     }
 }
@@ -154,10 +156,10 @@ pub fn export(
     mut progress: impl FnMut(usize, usize),
 ) -> Result<()> {
     project.validate()?;
-    ensure!(!project.pages.is_empty(), "Add at least one page");
+    ensure!(!project.pages.is_empty(), tr("Add at least one page"));
     ensure!(
         !target.exists(),
-        "Output already exists. Choose a new filename"
+        tr("Output already exists. Choose a new filename")
     );
     let mut temp = NewFile::beside(target)?;
     {
@@ -166,7 +168,7 @@ pub fn export(
         for sheet in 0..count {
             ensure!(
                 !cancel.load(Ordering::Relaxed),
-                "Export cancelled; no output was published"
+                tr("Export cancelled; no output was published")
             );
             let image = render_sheet(project, catalog, sheet, project.layout.dpi as f64)?;
             pdf.page(&image, project.layout.paper_pt())?;
@@ -174,7 +176,7 @@ pub fn export(
         }
         ensure!(
             !cancel.load(Ordering::Relaxed),
-            "Export cancelled; no output was published"
+            tr("Export cancelled; no output was published")
         );
         pdf.finish()?;
     }

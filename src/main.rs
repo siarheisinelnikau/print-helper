@@ -1767,6 +1767,73 @@ mod tests {
     }
 
     #[test]
+    fn translated_workspaces_and_settings_fit_the_minimum_window_in_both_themes() {
+        for language in Language::ALL {
+            for theme in [Theme::Light, Theme::Dark] {
+                for state in 0..3 {
+                    let ctx = egui::Context::default();
+                    let mut app = if state == 0 {
+                        App::with_settings(
+                            &ctx,
+                            BackgroundWake::new(|| {}),
+                            Settings {
+                                startup_updates: false,
+                                language,
+                                theme,
+                            },
+                            None,
+                        )
+                    } else {
+                        let mut app = fixture(&ctx);
+                        app.settings.language = language;
+                        app.settings.theme = theme;
+                        i18n::set_language(language);
+                        design::apply(&ctx, theme);
+                        app
+                    };
+                    if state == 1 {
+                        app.select_page(1);
+                    }
+                    if state == 2 {
+                        app.settings_open = true;
+                    }
+                    for _ in 0..3 {
+                        let _ = ctx.run(
+                            egui::RawInput {
+                                screen_rect: Some(egui::Rect::from_min_size(
+                                    egui::Pos2::ZERO,
+                                    Vec2::new(960.0, 640.0),
+                                )),
+                                viewports: [(
+                                    egui::ViewportId::ROOT,
+                                    egui::ViewportInfo {
+                                        native_pixels_per_point: Some(1.5),
+                                        ..Default::default()
+                                    },
+                                )]
+                                .into_iter()
+                                .collect(),
+                                ..Default::default()
+                            },
+                            |ctx| app.update(ctx),
+                        );
+                    }
+                    let used = ctx.used_rect();
+                    assert!(
+                        used.max.x <= 961.0 && used.max.y <= 641.0,
+                        "{language:?}/{theme:?}, state {state} exceeds minimum bounds: {used:?}"
+                    );
+                    assert_eq!(ctx.style().visuals.dark_mode, theme == Theme::Dark);
+                    assert!(!app.worker.is_busy());
+                    assert!(!app.network.is_busy());
+                    assert!(!app.dirty);
+                }
+            }
+        }
+        i18n::set_language(Language::English);
+    }
+
+    #[test]
     fn page_actions_follow_selection_and_last_removal_returns_to_sheet_setup() {
         let ctx = egui::Context::default();
         let mut app = fixture(&ctx);
