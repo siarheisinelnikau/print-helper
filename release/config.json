@@ -1,0 +1,12 @@
+{
+  "repository": "siarheisinelnikau/print-helper",
+  "product": "PrintHelper",
+  "kind": "desktop",
+  "assets": [
+    {
+      "name": "PrintHelper-v{version}.exe"
+    }
+  ],
+  "notices": true,
+  "checksum_aliases": []
+}
